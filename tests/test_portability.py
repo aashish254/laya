@@ -104,7 +104,7 @@ for name in ("cpu", "mps", "xpu"):
     entered = []
     with mock.patch.object(_agent.torch, "autocast", _autocast_that_rejects_non_cuda(entered)):
         try:
-            ctx = _agent._amp_context(SimpleNamespace(type=name), torch.float32)
+            ctx = _agent._amp_context(SimpleNamespace(type=name), torch.float32, False)
             with ctx:
                 pass
             check_true("amp/%s never enters autocast" % name, entered == [], "entered %s" % entered)
@@ -114,15 +114,15 @@ for name in ("cpu", "mps", "xpu"):
 # CUDA still gets mixed precision, with the dtype the model was configured for
 entered = []
 with mock.patch.object(_agent.torch, "autocast", _autocast_that_rejects_non_cuda(entered)):
-    with _agent._amp_context(SimpleNamespace(type="cuda"), torch.float16):
+    with _agent._amp_context(SimpleNamespace(type="cuda"), torch.float16, True):
         pass
 check("amp/cuda uses autocast", entered, ["cuda"])
 
 # the old unconditional call is what broke MPS -- make sure it cannot come back
 import inspect  # noqa: E402
 
-_src = inspect.getsource(_agent.Agent._forward)
-check_true("amp/forward pass goes through _amp_context", "with _amp_context(self.device, self.dtype):" in _src)
+_src = inspect.getsource(_agent.Agent._infer)
+check_true("amp/forward pass goes through _amp_context", "with _amp_context(self.device, self.dtype, enabled):" in _src)
 check_true("amp/no unconditional autocast in the forward pass",
            "torch.autocast(device_type=self.device.type" not in _src)
 
@@ -135,7 +135,7 @@ class _FakeTok:
     cls_token_id, sep_token_id, mask_token_id, pad_token_id = 1, 2, 3, 0
     mask_token = "[M]"
 
-    def __call__(self, text, add_special_tokens=False):
+    def __call__(self, text, add_special_tokens=False, **kw):
         return {"input_ids": [10 + (ord(c) % 40) for c in text]}
 
 
