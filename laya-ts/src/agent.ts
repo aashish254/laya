@@ -42,6 +42,8 @@ export interface ChoiceAnswer {
   choice: string;
   probabilities: Record<string, number>;
   confidence: number;
+  /** Present when minConfidence was set and this answer fell below it (#361). */
+  low_confidence?: boolean;
   action: ActionInfo;
 }
 
@@ -51,6 +53,8 @@ export interface ScoreAnswer {
   legend: Record<string, unknown>;
   probabilities: Record<string, number>;
   confidence: number;
+  /** Present when minConfidence was set and this answer fell below it (#361). */
+  low_confidence?: boolean;
   action: ActionInfo;
 }
 
@@ -58,6 +62,8 @@ export interface NoulAnswer {
   type: "noul";
   noul: number;
   confidence: number;
+  /** Present when minConfidence was set and this answer fell below it (#361). */
+  low_confidence?: boolean;
   action: ActionInfo;
 }
 
@@ -102,10 +108,42 @@ export interface PredictOptions {
   onPredictStart?: PredictHook;
   onPredictEnd?: PredictHook;
   hooksRaise?: boolean;
+  /**
+   * Opt-in abstention marker: answers whose confidence falls below this
+   * threshold are returned unchanged but flagged `low_confidence: true`, so a
+   * caller can route them to a human or a stronger path. The raw answer and
+   * confidence stay intact. Must be in [0, 1]; 0 (the default) disables the
+   * check. See #361.
+   */
+  minConfidence?: number;
 }
 
 function qidStr(qid: string): string {
   return JSON.stringify(qid);
+}
+
+function checkMinConfidence(v: unknown): number {
+  if (typeof v !== "number" || !Number.isFinite(v) || v < 0 || v > 1) {
+    throw new Error(`minConfidence must be a number in [0, 1], got ${JSON.stringify(v) ?? String(v)}`);
+  }
+  return v;
+}
+
+function flagLowConfidence(results: SystemOneResult[], minConfidence: number): void {
+  if (minConfidence === 0) return;
+  for (const res of results) {
+    const answers = res?.answers;
+    if (!answers || typeof answers !== "object") continue;
+    for (const a of Object.values(answers)) {
+      if (
+        a && typeof a === "object" &&
+        typeof (a as { confidence?: unknown }).confidence === "number" &&
+        (a as { confidence: number }).confidence < minConfidence
+      ) {
+        (a as { low_confidence?: boolean }).low_confidence = true;
+      }
+    }
+  }
 }
 
 export function checkQuestion(qid: string, qdef: unknown): void {
@@ -305,6 +343,7 @@ export class Agent extends HookRegistry {
     questions: Record<string, QuestionDef>,
     opts: PredictOptions,
   ): Promise<SystemOneResult[]> {
+    const minConfidence = opts.minConfidence === undefined ? 0 : checkMinConfidence(opts.minConfidence);
     const active = composeHooks(this.hooks, opts.hooks, opts.onPredictStart, opts.onPredictEnd);
     const raiseErrors = opts.hooksRaise ?? this.hooksRaise;
     const ctx = new PredictContext({
@@ -340,6 +379,9 @@ export class Agent extends HookRegistry {
         if (ctx.error === null) throw hookErr;
       }
     }
+    // Flag after end hooks so rewritten results are covered too; hook-provided
+    // answers without a numeric confidence are left untouched.
+    flagLowConfidence((ctx.results ?? []) as unknown as SystemOneResult[], minConfidence);
     return ctx.results as unknown as SystemOneResult[];
   }
 
