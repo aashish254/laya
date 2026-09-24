@@ -198,7 +198,8 @@ def _apply_rope_config(ecfg) -> None:
             setattr(ecfg, attr, float(theta))
 
 
-def build_model(cfg: Dict, encoder_dir: Optional[str] = None, pretrained: bool = True) -> DecisionModel:
+def build_model(cfg: Dict, encoder_dir: Optional[str] = None, pretrained: bool = True,
+                revision: Optional[str] = None) -> DecisionModel:
     from transformers import AutoConfig, AutoModel
 
     if not pretrained or (encoder_dir and os.path.exists(encoder_dir)):
@@ -206,7 +207,11 @@ def build_model(cfg: Dict, encoder_dir: Optional[str] = None, pretrained: bool =
         _apply_rope_config(ecfg)
         enc = AutoModel.from_config(ecfg, attn_implementation="sdpa")
     else:
-        enc = AutoModel.from_pretrained(cfg["encoder"], attn_implementation="sdpa")
+        # Training-time Hub load of the base encoder; allow pinning it like the checkpoints.
+        kw = {"attn_implementation": "sdpa"}
+        if revision:
+            kw["revision"] = revision
+        enc = AutoModel.from_pretrained(cfg["encoder"], **kw)
     return DecisionModel(enc, cfg.get("head_layers", 2), len(cfg.get("act_costs", {})) + 1)
 
 

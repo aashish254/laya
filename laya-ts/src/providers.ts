@@ -1,6 +1,57 @@
 /** ONNX session shim: Node (onnxruntime-node) + browser (onnxruntime-web).
  * Lazy imports only — unit tests with a fake provider never touch onnxruntime. */
 
+/** Reviewed commit SHAs of the published checkpoints (mirror of laya/revisions.py).
+ * Loads of these repos pin to the reviewed revision instead of mutable `main`; bump a
+ * pin only after the new revision has been reviewed. */
+export const PINNED_REVISIONS: Record<string, string> = {
+  "convaiinnovations/laya": "55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851",
+  "convaiinnovations/laya-multilingual": "e4e9ddf21a7b1903b7acffd8814ad4307bf63a67",
+  "convaiinnovations/laya-typed-decisions": "1a793eb568e6718f15941d08f85432581df534e3",
+};
+
+/** Explicit `revision` wins; published repos fall back to their reviewed pin; anything
+ * else keeps the hub default (`main`). */
+export function resolveRevision(repoOrId: string, revision?: string | null): string | null {
+  if (revision) return revision;
+  return PINNED_REVISIONS[repoOrId] ?? null;
+}
+
+/** SHA-256 hex via Web Crypto (browsers and modern Node expose globalThis.crypto). */
+async function sha256Hex(data: ArrayBuffer | Uint8Array): Promise<string> {
+  const subtle = (globalThis as { crypto?: { subtle?: any } }).crypto?.subtle;
+  if (!subtle) {
+    throw new Error("laya-ts: SHA-256 verification requires Web Crypto (globalThis.crypto.subtle)");
+  }
+  const digest = await subtle.digest("SHA-256", data);
+  return Array.from(new Uint8Array(digest as ArrayBuffer), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** Reject absolute or escaping digest paths before they ever reach the filesystem. */
+function normaliseDigestPath(rel: string): string {
+  const norm = String(rel).replace(/\\/g, "/").replace(/^\/+/, "");
+  if (!norm || norm === ".." || norm.startsWith("../") || norm.includes("/../")) {
+    throw new Error(`laya-ts: unsafe path in expectedSha256: ${JSON.stringify(rel)}`);
+  }
+  return norm;
+}
+
+/** Verify `data` against expectedSha256[rel]; artifacts not listed are left unchecked. */
+async function expectDigest(
+  rel: string,
+  data: ArrayBuffer | Uint8Array,
+  expected: Record<string, string>,
+): Promise<void> {
+  const want = expected[rel] ?? expected[normaliseDigestPath(rel)];
+  if (want === undefined) return;
+  const got = await sha256Hex(data);
+  if (got.toLowerCase() !== String(want).trim().toLowerCase()) {
+    throw new Error(
+      `laya-ts: SHA-256 mismatch for ${rel}: expected ${want}, got ${got}. Refusing to load the artifact.`,
+    );
+  }
+}
+
 export interface Batch {
   inputIds: number[][];
   attentionMask: number[][];
@@ -83,6 +134,8 @@ function pickOutput(out: Record<string, any>, names: string[]): any {
 export interface ProviderOptions {
   device?: string;
   numThreads?: number;
+  /** Opt-in {artifact name: SHA-256 hexdigest} check for fetched ONNX files (web). */
+  expectedSha256?: Record<string, string>;
 }
 
 function applyNumThreads(ort: any, numThreads?: number): void {
@@ -159,31 +212,39 @@ async function fetchArrayBuffer(url: string): Promise<ArrayBuffer> {
   return await res.arrayBuffer();
 }
 
-async function fetchJson(url: string): Promise<unknown> {
-  const buf = await fetchArrayBuffer(url);
-  return JSON.parse(new TextDecoder().decode(buf));
-}
-
 export interface NodeBundle {
   dir: string;
   cfg: any;
   tokenizerJson: unknown | null;
+  /** Commit SHA the artifacts came from (pinned/requested, or the hub's `x-repo-commit`); null for local dirs. */
+  revision: string | null;
 }
 
 export async function loadNodeBundle(
   modelDirOrRepo: string,
-  opts?: { subfolder?: string | null; localDir?: string; token?: string | null },
+  opts?: {
+    subfolder?: string | null;
+    localDir?: string;
+    token?: string | null;
+    revision?: string | null;
+    expectedSha256?: Record<string, string>;
+  },
 ): Promise<NodeBundle> {
   const fs: typeof import("node:fs/promises") = await import("node:fs/promises");
   const path: typeof import("node:path") = await import("node:path");
   const os: typeof import("node:os") = await import("node:os");
   const sub = opts?.subfolder ?? null;
   let dir = opts?.localDir ?? modelDirOrRepo;
+  let resolvedRevision: string | null = null;
   try {
     const st = await fs.stat(sub ? path.join(dir, sub) : dir);
     if (st.isDirectory()) dir = sub ? path.join(dir, sub) : dir;
     else dir = path.dirname(dir);
   } catch {
+    // Pin published repos to their reviewed commit SHA instead of mutable `main`; the
+    // revision joins the cache key so differently-pinned artifacts never collide.
+    const revision = resolveRevision(modelDirOrRepo, opts?.revision);
+    resolvedRevision = revision;
     const cache = path.join(
       os.homedir(),
       ".cache",
@@ -191,6 +252,7 @@ export async function loadNodeBundle(
       "hf",
       modelDirOrRepo.replace(/\//g, "__"),
       sub ?? "root",
+      ...(revision && revision !== "main" ? [revision] : []),
     );
     await fs.mkdir(cache, { recursive: true });
     const token =
@@ -199,8 +261,10 @@ export async function loadNodeBundle(
       try {
         await fs.stat(path.join(cache, f));
       } catch {
-        const url = `https://huggingface.co/${modelDirOrRepo}/resolve/main/${sub ? sub + "/" : ""}${f}`;
+        const url = `https://huggingface.co/${modelDirOrRepo}/resolve/${revision ?? "main"}/${sub ? sub + "/" : ""}${f}`;
         const res = await fetch(url, token ? { headers: { Authorization: `Bearer ${token}` } } : undefined);
+        const commit = res.headers?.get?.("x-repo-commit");
+        if (commit) resolvedRevision = commit;
         if (!res.ok) {
           if (f === "rl_agent_config.json") {
             throw new Error(
@@ -211,10 +275,34 @@ export async function loadNodeBundle(
         }
         const target = path.join(cache, f);
         await fs.mkdir(path.dirname(target), { recursive: true });
-        await fs.writeFile(target, new Uint8Array(await res.arrayBuffer()));
+        // Write-then-rename so an interrupted download never leaves a truncated
+        // artifact that later loads treat as complete.
+        const tmp = `${target}.tmp-${typeof process !== "undefined" ? process.pid : 0}`;
+        await fs.writeFile(tmp, new Uint8Array(await res.arrayBuffer()));
+        await fs.rename(tmp, target);
       }
     }
     dir = cache;
+  }
+  // Opt-in integrity check over the resolved directory (covers local dirs, warm cache,
+  // and fresh downloads alike) before any artifact is parsed or executed.
+  if (opts?.expectedSha256) {
+    const { createHash } = await import("node:crypto");
+    for (const [rel, want] of Object.entries(opts.expectedSha256)) {
+      const norm = normaliseDigestPath(rel);
+      let buf: Uint8Array;
+      try {
+        buf = new Uint8Array(await fs.readFile(path.join(dir, norm)));
+      } catch {
+        throw new Error(`laya-ts: cannot verify ${JSON.stringify(rel)}: not found under ${dir}`);
+      }
+      const got = createHash("sha256").update(buf).digest("hex");
+      if (got.toLowerCase() !== String(want).trim().toLowerCase()) {
+        throw new Error(
+          `laya-ts: SHA-256 mismatch for ${rel}: expected ${want}, got ${got}. Refusing to load the artifact.`,
+        );
+      }
+    }
   }
   let cfg: any = {};
   try {
@@ -233,44 +321,58 @@ export async function loadNodeBundle(
       // Try the next supported Hugging Face layout.
     }
   }
-  return { dir, cfg, tokenizerJson };
+  return { dir, cfg, tokenizerJson, revision: resolvedRevision };
 }
 
 export interface WebBundle {
   dir: string;
   cfg: any;
   tokenizerJson: unknown | null;
+  /** Pinned/requested commit SHA, if any (full-URL sources have no implicit revision). */
+  revision: string | null;
 }
 
-function baseUrlFor(repoOrUrl: string, subfolder?: string | null): string {
+function baseUrlFor(repoOrUrl: string, subfolder?: string | null, revision?: string | null): string {
   const sub = subfolder ? `/${subfolder.replace(/^\/+|\/+$/g, "")}` : "";
   if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(repoOrUrl)) {
     return `${repoOrUrl.replace(/\/+$/, "")}${sub}`;
   }
-  return `https://huggingface.co/${repoOrUrl}/resolve/main${sub}`;
+  return `https://huggingface.co/${repoOrUrl}/resolve/${revision ?? "main"}${sub}`;
 }
 
 export async function loadWebBundle(
   repoOrUrl: string,
-  opts?: { subfolder?: string | null },
+  opts?: {
+    subfolder?: string | null;
+    revision?: string | null;
+    expectedSha256?: Record<string, string>;
+  },
 ): Promise<WebBundle> {
-  const base = baseUrlFor(repoOrUrl, opts?.subfolder ?? null);
+  const revision = resolveRevision(repoOrUrl, opts?.revision);
+  const base = baseUrlFor(repoOrUrl, opts?.subfolder ?? null, revision);
+  const fetchVerifiedJson = async (rel: string): Promise<unknown> => {
+    const buf = await fetchArrayBuffer(`${base}/${rel}`);
+    if (opts?.expectedSha256) await expectDigest(rel, buf, opts.expectedSha256);
+    return JSON.parse(new TextDecoder().decode(buf));
+  };
   let cfg: any;
   try {
-    cfg = await fetchJson(`${base}/rl_agent_config.json`);
-  } catch {
+    cfg = await fetchVerifiedJson("rl_agent_config.json");
+  } catch (e) {
+    if (e instanceof Error && e.message.startsWith("laya-ts: SHA-256 mismatch")) throw e;
     throw new Error(`Incompatible model: ${JSON.stringify(repoOrUrl)} does not contain 'rl_agent_config.json'.`);
   }
   let tokenizerJson: unknown | null = null;
   for (const candidate of ["tokenizer.json", "tokenizer/tokenizer.json"]) {
     try {
-      tokenizerJson = await fetchJson(`${base}/${candidate}`);
+      tokenizerJson = await fetchVerifiedJson(candidate);
       break;
-    } catch {
+    } catch (e) {
+      if (e instanceof Error && e.message.startsWith("laya-ts: SHA-256 mismatch")) throw e;
       // Try the next supported Hugging Face layout.
     }
   }
-  return { dir: base, cfg, tokenizerJson };
+  return { dir: base, cfg, tokenizerJson, revision };
 }
 
 export async function createNodeProvider(
@@ -389,6 +491,11 @@ export async function createWebProvider(
     headBuf = await fetchArrayBuffer(headUrl);
   } catch {
     throw new Error(`Incompatible model: 'head.onnx' not found (expected ${headUrl}).`);
+  }
+  // Verify before the bytes reach the runtime: a tampered ONNX never becomes a session.
+  if (opts?.expectedSha256) {
+    await expectDigest("encoder.onnx", encBuf, opts.expectedSha256);
+    await expectDigest("head.onnx", headBuf, opts.expectedSha256);
   }
   let enc: any;
   try {

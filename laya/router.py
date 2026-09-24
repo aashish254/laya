@@ -204,6 +204,7 @@ class Router(HookRegistry):
         models: Optional[Dict[str, str]] = None,
         device: Optional[str] = None,
         token: Optional[str] = None,
+        revision: Optional[str] = None,
         max_loaded: int = 2,
         default: str = "english",
         auto_task_detection: bool = False,
@@ -226,6 +227,10 @@ class Router(HookRegistry):
             self.models.update({normalise_name(k): v for k, v in models.items()})
         self.device = device
         self.token = token or os.environ.get("HF_TOKEN")
+        # Optional Hub revision (commit SHA/branch/tag) applied to every checkpoint load.
+        # The published checkpoints pin to a reviewed SHA even without this; see
+        # `laya.revisions.PINNED_REVISIONS`.
+        self.revision = revision
         self.max_loaded = max(1, int(max_loaded))
         self.default = normalise_name(default)
         self.auto_task_detection = bool(auto_task_detection)
@@ -257,7 +262,8 @@ class Router(HookRegistry):
                 return self._agents[key]
             from .agent import Agent
             repo, sub = _split(self.models[key])
-            agent = Agent(repo, device=self.device, token=self.token, subfolder=sub)
+            agent = Agent(repo, device=self.device, token=self.token, subfolder=sub,
+                          revision=self.revision)
             self._agents[key] = agent
             self._order.append(key)
             evicted = self._evict_locked()
@@ -370,6 +376,12 @@ class Router(HookRegistry):
     def loaded(self) -> List[str]:
         with self._lock:
             return list(self._order)
+
+    @property
+    def loaded_revisions(self) -> Dict[str, Optional[str]]:
+        """Commit SHA each resident agent was loaded from (None for local paths)."""
+        with self._lock:
+            return {name: getattr(agent, "revision", None) for name, agent in self._agents.items()}
 
     def _resolve_hint(self, hint: Any, state: Union[str, dict, list, None]) -> Optional[bool]:
         """True/False for a hint about whether the English checkpoint can read `state`.

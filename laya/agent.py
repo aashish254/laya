@@ -28,6 +28,7 @@ from .common import (
     temp_bucket,
 )
 from .hooks import HookRegistry, PredictContext, aggregate_usage, compose_hooks, dispatch, normalise_hooks
+from .revisions import resolve_revision, snapshot_revision, verify_digests
 
 
 def _fix_tokenizer_config(path: str):
@@ -216,6 +217,8 @@ class Agent(HookRegistry):
         subfolder: Optional[str] = None,
         fast: bool = False,
         compile: bool = False,
+        revision: Optional[str] = None,
+        expected_sha256: Optional[Dict[str, str]] = None,
         lang_temperatures: Optional[Dict[str, Dict[str, Any]]] = None,
         hooks=None,
         on_predict_start=None,
@@ -224,6 +227,13 @@ class Agent(HookRegistry):
         hooks_concurrent: bool = True,
     ):
         """Load a Laya checkpoint.
+
+        `revision` pins the Hub download to an explicit commit SHA/branch/tag. The
+        published convaiinnovations/* checkpoints default to the reviewed SHA pinned in
+        `laya.revisions.PINNED_REVISIONS` instead of mutable `main`; pass `revision` to
+        override. `expected_sha256` ({path relative to the checkpoint dir: hexdigest})
+        verifies artifact integrity before any weight is parsed or executed; it is opt-in
+        and applies to local directories too.
 
         `fast=True` swaps the encoder/head forward for the TileLang fast path (CUDA only, needs
         `pip install laya[fast]`); see `Agent.accelerate`.
@@ -250,6 +260,7 @@ class Agent(HookRegistry):
             from transformers.modeling_utils import no_init_weights
 
         model_dir = model_id_or_path
+        self.revision: Optional[str] = None
         if not os.path.exists(model_dir):
             if model_id_or_path.startswith(("/", "./", "../")) or os.path.isabs(model_id_or_path):
                 raise FileNotFoundError(
@@ -260,6 +271,7 @@ class Agent(HookRegistry):
 
             # Restrict root checkpoints too: the default repo also contains sibling
             # checkpoints, which an unfiltered snapshot would unnecessarily download.
+            revision = resolve_revision(model_id_or_path, revision)
             prefix = f"{subfolder}/" if subfolder else ""
             kw = {
                 "token": token or os.environ.get("HF_TOKEN") or None,
@@ -267,7 +279,11 @@ class Agent(HookRegistry):
                     "rl_agent_config.json", "model.safetensors", "tokenizer/*", "encoder/*",
                 )],
             }
+            if revision:
+                kw["revision"] = revision
             model_dir = snapshot_download(model_id_or_path, **kw)
+            # The cache layout records which commit the snapshot points at.
+            self.revision = snapshot_revision(model_dir) or revision
 
         if subfolder:
             model_dir = os.path.join(model_dir, subfolder)
@@ -275,6 +291,10 @@ class Agent(HookRegistry):
                 raise FileNotFoundError(
                     f"Subfolder {subfolder!r} not found in {model_id_or_path!r}."
                 )
+
+        # Verify integrity before any file in the checkpoint is parsed or executed.
+        if expected_sha256:
+            verify_digests(model_dir, expected_sha256)
 
         _fix_tokenizer_config(model_dir)
 
@@ -911,6 +931,7 @@ RLAgent = Agent
 
 def load(model_id_or_path: str = "convaiinnovations/laya", device: Optional[str] = None,
          token: Optional[str] = None, subfolder: Optional[str] = None, fast: bool = False,
+         revision: Optional[str] = None, expected_sha256: Optional[Dict[str, str]] = None,
          lang_temperatures: Optional[Dict[str, Dict[str, Any]]] = None,
          hooks=None, on_predict_start=None, on_predict_end=None,
          hooks_raise: bool = True, hooks_concurrent: bool = True) -> Agent:
@@ -922,10 +943,12 @@ def load(model_id_or_path: str = "convaiinnovations/laya", device: Optional[str]
         laya.load("convaiinnovations/laya", subfolder="multilingual")
         laya.load("convaiinnovations/laya", fast=True)                # TileLang GPU fast path
 
+    `revision`/`expected_sha256` pin and verify the downloaded artifacts; see `Agent`.
     `hooks` / `on_predict_start` / `on_predict_end` observe or shape every prediction; see
     `laya.hooks`.
     """
     return Agent(model_id_or_path, device=device, token=token, subfolder=subfolder, fast=fast,
+                 revision=revision, expected_sha256=expected_sha256,
                  lang_temperatures=lang_temperatures,
                  hooks=hooks, on_predict_start=on_predict_start, on_predict_end=on_predict_end,
                  hooks_raise=hooks_raise, hooks_concurrent=hooks_concurrent)
