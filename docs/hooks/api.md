@@ -66,9 +66,9 @@ pass is skipped; `on_predict_end` still runs and the supplied results are return
 
 ```python
 def cache_read(ctx):
-    hit = CACHE.get(key(ctx.states[0], ctx.questions))
-    if hit is not None:
-        ctx.skip([hit])   # list of per-state results, same shape as predict_batch's return
+    hits = [CACHE.get(key(s, ctx.questions)) for s in ctx.states]
+    if all(hit is not None for hit in hits):
+        ctx.skip(hits)   # one entry per state in ctx.states, same shape as predict_batch's return
 ```
 
 On the `Router`, a skipped payload gets a `routing` key added (without overwriting one it

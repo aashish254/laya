@@ -10,6 +10,7 @@ the key matched, so what a key covers is part of the contract, not an implementa
 Run: python tests/test_hooks_api.py
 """
 import dataclasses
+import functools
 import hashlib
 import inspect
 import json
@@ -180,33 +181,57 @@ Q_ORDER_A = {"ask": {"type": "choice", "instructions": "What does the customer w
 Q_ORDER_B = {"ask": {"type": "choice", "instructions": "What does the customer want?",
                      "criteria": {"other": CRITERIA["other"], "refund": CRITERIA["refund"],
                                   "cancel": CRITERIA["cancel"]}}}
+BATCH = ["I was charged twice for the same invoice.",
+         "The app crashes every time I open the export screen.",
+         "Where do I change my notification settings?"]
 
 
-def taught_key(path, marker):
-    """The key builder of one of those three files, exec'd out of that file's own text.
+def taught_cache(path):
+    """One taught copy of the cache pattern, exec'd out of that file's own text.
 
     Sliced rather than imported: the example calls `laya.load()` at module scope, which would
-    download a checkpoint, and a docs code block is not importable at all.
+    download a checkpoint, and a docs code block is not importable at all. The slice stops at that
+    `laya.load(...)` line for the same reason, so none of this needs weights.
     """
     with open(os.path.join(REPO, path), encoding="utf-8") as handle:
         text = handle.read()
-    start = text.index("def %s(" % marker)
-    namespace = {"json": json, "hashlib": hashlib}
-    exec(text[start:text.index("\ndef ", start + 1)], namespace)
-    return namespace[marker]
+    start = text.index("CACHE = {")
+    stop = len(text)
+    for cut in ("\nlaya.load", "\nagent = laya.load"):
+        found = text.find(cut, start)
+        if found != -1:
+            stop = min(stop, found)
+    namespace = {"json": json, "hashlib": hashlib, "laya": laya}
+    exec(text[start:stop], namespace)
+    return namespace
 
 
-def cache_ctx(questions, model="english", max_len=None, head_max_len=None):
-    return PredictContext(states=["I was charged twice for the same invoice."],
-                          questions=questions, model=model, max_len=max_len,
-                          head_max_len=head_max_len)
+def key_of(namespace, ctx, index=0):
+    """The copy's key builder, called the way that copy declares it."""
+    key = namespace.get("cache_key") or namespace["key"]
+    return key(ctx, index) if len(sig(key)) > 1 else key(ctx)
 
 
-TAUGHT = [("examples/hooks/cache.py", taught_key("examples/hooks/cache.py", "cache_key")),
-          ("docs/hooks/patterns.md", taught_key("docs/hooks/patterns.md", "key")),
-          ("docs/hooks/examples.md", taught_key("docs/hooks/examples.md", "key"))]
+def cache_ctx(questions, model="english", max_len=None, head_max_len=None, states=(BATCH[0],)):
+    return PredictContext(states=list(states), questions=questions, model=model,
+                          max_len=max_len, head_max_len=head_max_len)
 
-for path, key in TAUGHT:
+
+def answers_for(states):
+    """Per-state payloads, each labelled with its own state, so a mix-up is visible."""
+    return [{"model": "laya-rl-agent", "answers": {"ask": {"type": "choice", "choice": tag}},
+             "usage": {"input_tokens": 10 + i}} for i, tag in enumerate(
+                 ["billing", "support", "other", "refund", "cancel"][:len(states)])]
+
+
+TAUGHT = [("examples/hooks/cache.py", taught_cache("examples/hooks/cache.py")),
+          ("docs/hooks/patterns.md", taught_cache("docs/hooks/patterns.md")),
+          ("docs/hooks/examples.md", taught_cache("docs/hooks/examples.md"))]
+
+for path, namespace in TAUGHT:
+    key = functools.partial(key_of, namespace)
+    read = namespace.get("cache_read") or namespace["read"]
+    write = namespace.get("cache_write") or namespace["write"]
     ctx = cache_ctx(Q_ORDER_A)
     check_true("%s/reordered criteria is a new entry" % path, key(ctx) != key(cache_ctx(Q_ORDER_B)))
     check_true("%s/reorders are distinct exactly when the core says so" % path,
@@ -219,10 +244,45 @@ for path, key in TAUGHT:
         check_true("%s/another %s is a new entry" % (path, field),
                    key(ctx) != key(cache_ctx(Q_ORDER_A, **{field: 256})))
 
+    # A hook fires once per call, and a call can carry a whole batch.
+    check("%s/key takes the state it describes" % path,
+          len(sig(namespace.get("cache_key") or namespace["key"])), 2)
+    multi = cache_ctx(Q_ORDER_A, states=BATCH)
+    check_true("%s/two states of one call are two entries" % path,
+               key(multi, 0) != key(multi, 1))
+    namespace["CACHE"].clear()
+    filled = cache_ctx(Q_ORDER_A, states=BATCH)
+    filled.results = answers_for(BATCH)
+    write(filled)
+    check("%s/write stores one entry per state" % path, len(namespace["CACHE"]), len(BATCH))
+    warm = cache_ctx(Q_ORDER_A, states=list(reversed(BATCH)))
+    read(warm)
+    check("%s/a warm batch is served back per state, in the caller's order" % path,
+          warm.results, list(reversed(filled.results)))
+    cold = cache_ctx(Q_ORDER_A, states=BATCH[:2] + ["an uncached state"])
+    read(cold)
+    check_true("%s/a batch with one uncached state still runs" % path, cold.results is None)
+    single = cache_ctx(Q_ORDER_A, states=[BATCH[1]])
+    read(single)
+    check("%s/a single-state call is one entry" % path, single.results, [filled.results[1]])
+    empty = cache_ctx(Q_ORDER_A, states=[])
+    try:
+        read(empty)
+        served = empty.results
+    except Exception as exc:                      # a hook that raises on an empty call is a failure
+        served = "raised %s" % exc.__class__.__name__
+    check("%s/an empty batch skips to an empty list" % path, served, [])
+    namespace["CACHE"].clear()
+
 # Three copies, one key: a docs page that drifts from the example fails here, not in someone's
 # production cache.
-for path, key in TAUGHT[1:]:
-    check("%s/keyed like the example" % path, key(cache_ctx(Q_ORDER_A)), TAUGHT[0][1](cache_ctx(Q_ORDER_A)))
+for path, namespace in TAUGHT[1:]:
+    check("%s/keyed like the example" % path,
+          key_of(namespace, cache_ctx(Q_ORDER_A)),
+          key_of(TAUGHT[0][1], cache_ctx(Q_ORDER_A)))
+    check("%s/per-state like the example" % path,
+          key_of(namespace, cache_ctx(Q_ORDER_A, states=BATCH), 1),
+          key_of(TAUGHT[0][1], cache_ctx(Q_ORDER_A, states=BATCH), 1))
 
 
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))
