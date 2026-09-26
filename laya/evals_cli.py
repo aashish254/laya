@@ -13,7 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from . import evals
 from .evals import EvalError
@@ -47,6 +47,33 @@ def _parse_pairs(pairs: Optional[Sequence[str]]) -> Dict[str, float]:
     return out
 
 
+def _parse_revisions(pairs: Optional[Sequence[str]]) -> Tuple[Optional[str], Dict[str, str]]:
+    """Read `--revision` into the two forms `Router` takes: one commit, or one per checkpoint.
+
+    A bare value is the commit for every checkpoint this run loads; `NAME=SHA` pins one
+    checkpoint, which is what an auto-routing run needs, because the three checkpoints are three
+    Hub repositories and one commit cannot exist in all of them.
+    """
+    shared: Optional[str] = None
+    per_model: Dict[str, str] = {}
+    for pair in pairs or []:
+        name, sep, value = pair.partition("=")
+        if sep:
+            name, value = name.strip(), value.strip()
+            if not name or not value:
+                raise EvalError("expected NAME=REVISION, got %r" % pair)
+            per_model[name] = value
+        else:
+            value = pair.strip()
+            if not value:
+                raise EvalError("--revision wants a commit SHA or NAME=SHA, got %r" % pair)
+            if shared is not None and shared != value:
+                raise EvalError("--revision names two commits for every checkpoint: %r, %r"
+                                % (shared, value))
+            shared = value
+    return shared, per_model
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="laya-evals",
                                      description="Evaluate a Laya checkpoint on a labelled dataset.")
@@ -59,6 +86,11 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("dataset")
     run.add_argument("--model", help="force a checkpoint instead of auto-routing")
     run.add_argument("--device", help="torch device, e.g. cpu or cuda")
+    run.add_argument("--revision", action="append", metavar="SHA | NAME=SHA",
+                     help="pin the checkpoint commit: a bare SHA applies to every checkpoint this "
+                          "run loads, NAME=SHA pins one (repeatable). Unpinned runs fetch the "
+                          "checkpoint's default branch; the report records the commit that answered "
+                          "either way")
     run.add_argument("--batch-size", type=int, help="examples per forward pass when questions match")
     run.add_argument("--on-error", choices=("fail", "skip"), default="fail")
     run.add_argument("--baseline", help="a baseline report JSON to compare against")
@@ -122,10 +154,25 @@ def _cmd_run(args) -> int:
     if args.model:
         for example in dataset.examples:      # --model is authoritative over per-row model
             example.model = args.model
-    runner: Any = RouterRunner(laya.Router(device=args.device, preload=False))
+    revision, revisions = _parse_revisions(args.revision)
+    try:
+        router = laya.Router(device=args.device, preload=False, revision=revision,
+                             revisions=revisions)
+    except ValueError as exc:
+        # `Router` already rejects a checkpoint name it does not know -- normalising case,
+        # surrounding spaces and aliases on the way -- with the option list in the message.  This
+        # only turns that into `laya-evals: unknown model 'englishg'; choose one of …` instead of
+        # a traceback, so a mistyped pin fails as a usage error and never starts a download.
+        raise EvalError(str(exc)) from exc
+    runner: Any = RouterRunner(router)
     config = {"dataset": args.dataset, "model": args.model, "device": args.device}
     report = evals.evaluate(runner, dataset, batch_size=args.batch_size,
                             on_error=args.on_error, config=config)
+    # Which commit answered belongs in the artifact a baseline is, and it can only be read after
+    # the run: `preload=False` means no checkpoint is resident before the first row.
+    # `loaded_revisions` reports the commit each resident agent came from -- the pin when there is
+    # one, the commit the default branch resolved to when there is not, None for a local path.
+    report.config = dict(report.config, revisions=router.loaded_revisions)
 
     mins = _parse_pairs(args.min)
     maxs = _parse_pairs(args.max)

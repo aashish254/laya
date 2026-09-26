@@ -88,7 +88,14 @@ Two CI surfaces use this:
   PR.
 
 The harness is deterministic for a fixed checkpoint revision, so a report is reproducible.
-`run` records the dataset, model and device in the report's `config` block.
+`run` records the dataset, model and device in the report's `config` block, plus `revisions`:
+the commit each checkpoint that answered was actually loaded from. `--revision <SHA>` pins that
+commit for every checkpoint the run loads, and `--revision english=<SHA>` pins one checkpoint
+(repeatable) — which is the form an auto-routing run wants, since the three checkpoints are three
+repositories and one commit cannot exist in all of them. Left unpinned, the run takes the
+checkpoint's default branch and the report still says which commit answered, so a baseline drift
+can be attributed to the weights or to the code. `laya/revisions.py` publishes reviewed commit
+SHAs in `PINNED_REVISIONS` for callers who want to opt in.
 
 ## Adding the real labelled set
 
