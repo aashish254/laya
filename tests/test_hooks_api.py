@@ -4,10 +4,15 @@ These tests pin the public hook surface (parameter names, kinds, defaults, conte
 lifecycle events, exports) so a change that would break callers fails here first. If a change
 is intentional, update this file in the same commit.
 
+The cache key the examples and docs teach is pinned here too: `ctx.skip()` hands back whatever
+the key matched, so what a key covers is part of the contract, not an implementation detail.
+
 Run: python tests/test_hooks_api.py
 """
 import dataclasses
+import hashlib
 import inspect
+import json
 import os
 import sys
 
@@ -17,6 +22,7 @@ import laya  # noqa: E402
 from laya import Agent, AsyncHook, BaseHook, PredictContext, PredictHook, Router, load  # noqa: E402
 from laya.hooks import HOOK_EVENTS, Hook  # noqa: E402
 from laya.onnx_agent import ONNXAgent  # noqa: E402
+from laya.router import _question_schema  # noqa: E402
 
 PASS, FAIL = [], []
 
@@ -156,6 +162,67 @@ for label, cls in (("Agent", Agent), ("ONNXAgent", ONNXAgent)):
 for label, cls in (("Agent", Agent), ("Router", Router), ("ONNXAgent", ONNXAgent)):
     for method in ("add_hook", "remove_hook", "hooks_installed"):
         check_true("%s/%s exists" % (label, method), callable(getattr(cls, method, None)))
+
+
+# ------------------------------------------------- the cache key the examples and docs teach
+# `examples/hooks/cache.py`, and the caching blocks of `docs/hooks/patterns.md` and
+# `docs/hooks/examples.md`, are three copies of one `ctx.skip()` pattern. The key is the part that
+# can be wrong: a payload sorted by key folds two criteria orders into one cache entry, while
+# `_question_schema` keeps them apart because a choice question's option order is positional. The
+# second caller then gets the first caller's answer. Measured on the English checkpoint, a question
+# whose criteria were only reordered came back at 0.661 confidence from the cache instead of its
+# own 0.496 -- enough to open a gate at 0.6 that a fresh pass would have kept shut.
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+CRITERIA = {"refund": "give me money back", "cancel": "stop the service", "other": "anything else"}
+Q_ORDER_A = {"ask": {"type": "choice", "instructions": "What does the customer want?",
+                     "criteria": dict(CRITERIA)}}
+Q_ORDER_B = {"ask": {"type": "choice", "instructions": "What does the customer want?",
+                     "criteria": {"other": CRITERIA["other"], "refund": CRITERIA["refund"],
+                                  "cancel": CRITERIA["cancel"]}}}
+
+
+def taught_key(path, marker):
+    """The key builder of one of those three files, exec'd out of that file's own text.
+
+    Sliced rather than imported: the example calls `laya.load()` at module scope, which would
+    download a checkpoint, and a docs code block is not importable at all.
+    """
+    with open(os.path.join(REPO, path), encoding="utf-8") as handle:
+        text = handle.read()
+    start = text.index("def %s(" % marker)
+    namespace = {"json": json, "hashlib": hashlib}
+    exec(text[start:text.index("\ndef ", start + 1)], namespace)
+    return namespace[marker]
+
+
+def cache_ctx(questions, model="english", max_len=None, head_max_len=None):
+    return PredictContext(states=["I was charged twice for the same invoice."],
+                          questions=questions, model=model, max_len=max_len,
+                          head_max_len=head_max_len)
+
+
+TAUGHT = [("examples/hooks/cache.py", taught_key("examples/hooks/cache.py", "cache_key")),
+          ("docs/hooks/patterns.md", taught_key("docs/hooks/patterns.md", "key")),
+          ("docs/hooks/examples.md", taught_key("docs/hooks/examples.md", "key"))]
+
+for path, key in TAUGHT:
+    ctx = cache_ctx(Q_ORDER_A)
+    check_true("%s/reordered criteria is a new entry" % path, key(ctx) != key(cache_ctx(Q_ORDER_B)))
+    check_true("%s/reorders are distinct exactly when the core says so" % path,
+               (key(ctx) != key(cache_ctx(Q_ORDER_B)))
+               == (_question_schema(Q_ORDER_A) != _question_schema(Q_ORDER_B)))
+    check_true("%s/the same call is a hit" % path, key(ctx) == key(cache_ctx(Q_ORDER_A)))
+    check_true("%s/another checkpoint is a new entry" % path,
+               key(ctx) != key(cache_ctx(Q_ORDER_A, model="multilingual")))
+    for field in ("max_len", "head_max_len"):
+        check_true("%s/another %s is a new entry" % (path, field),
+                   key(ctx) != key(cache_ctx(Q_ORDER_A, **{field: 256})))
+
+# Three copies, one key: a docs page that drifts from the example fails here, not in someone's
+# production cache.
+for path, key in TAUGHT[1:]:
+    check("%s/keyed like the example" % path, key(cache_ctx(Q_ORDER_A)), TAUGHT[0][1](cache_ctx(Q_ORDER_A)))
 
 
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))
