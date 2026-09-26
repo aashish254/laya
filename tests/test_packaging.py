@@ -237,10 +237,10 @@ check("extras/every referenced extra is declared",
 # README documents wrapping an embedder in it, each of its three shortlisting siblings has a
 # `:::` directive in reference/helpers.md, and it appeared on no docs page.
 #
-# Only the export list is read, never an attribute, so no lazy name resolves and no checkpoint is
-# touched. It is read from the source rather than imported: an editable install registers a
-# meta-path finder that wins over the `sys.path.insert` this suite does at the top, so
-# `import laya` silently returns *another checkout's* package -- which the mutation check caught.
+# Like every other check in this file, this one reads source under the directory it walks and
+# imports nothing: no `laya.__getattr__` name resolves, torch never loads, and a computed `__all__`
+# returns [] for the guard below to report instead of an import quietly yielding whatever the
+# environment happens to have installed.
 def _exported_names():
     tree = ast.parse(read(os.path.join("laya", "__init__.py")))
     for node in tree.body:
