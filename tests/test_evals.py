@@ -160,6 +160,92 @@ def test_evaluate_batches_same_questions():
     assert report.overall["choice_accuracy"] == 1.0
 
 
+class RequestsRunner(StubRunner):
+    """The `Router` shape: a list of per-request dicts, and no ``model=`` on the call."""
+
+    def __init__(self, by_state):
+        super().__init__(by_state)
+        self.batches = []
+        self.batch_sizes = []
+
+    def predict_batch(self, requests, batch_size=None):
+        self.batches.append(list(requests))
+        self.batch_sizes.append(batch_size)
+        return [{"model": r.get("model") or "m", "answers": self.by_state[r["state"]]}
+                for r in requests]
+
+
+def _labels(report):
+    """The decided labels with their correctness: parity at decision level, not as floats."""
+    return [(c["answer"]["choice"], c["correct"]) for c in report.cases]
+
+
+def test_evaluate_drives_a_requests_shaped_batch():
+    dataset = Dataset([Example("s1", Q, {"intent": "a"}, model="english"),
+                       Example("s2", Q, {"intent": "a"}, model="english")])
+    runner = RequestsRunner({"s1": {"intent": choice_answer("a")},
+                             "s2": {"intent": choice_answer("a")}})
+    report = evaluate(runner, dataset, evaluators=[ChoiceAccuracy()], batch_size=8)
+    assert len(runner.batches) == 1, "a request-dict batch is a forward pass the harness can run"
+    expected = [{"state": "s1", "questions": Q, "model": "english"},
+                {"state": "s2", "questions": Q, "model": "english"}]
+    assert runner.batches[0] == expected, "each request carries its own state, questions, checkpoint"
+    assert runner.batch_sizes == [8], "the requested batch size reaches the runner"
+    assert report.overall["choice_accuracy"] == 1.0
+
+
+def test_requests_shaped_batch_agrees_with_single_predicts():
+    """`batch_size` changes how many forward passes a run makes, never what it scores."""
+    dataset = Dataset([Example("s1", Q, {"intent": "a"}), Example("s2", Q, {"intent": "a"}),
+                       Example("s3", Q, {"intent": "b"})])
+    answers = {"s1": {"intent": choice_answer("a")}, "s2": {"intent": choice_answer("b")},
+               "s3": {"intent": choice_answer("b")}}
+    batched = evaluate(RequestsRunner(answers), dataset, evaluators=[ChoiceAccuracy()], batch_size=8)
+    single = evaluate(RequestsRunner(answers), dataset, evaluators=[ChoiceAccuracy()])
+    assert _labels(batched) == _labels(single) == [("a", True), ("b", False), ("b", True)]
+    assert len(batched.cases) == len(single.cases) == 3
+
+
+def test_evaluate_scores_a_batch_shape_it_cannot_call():
+    """A `predict_batch` in neither documented shape must not fail the run row by row."""
+    class UntypedBatch(StubRunner):
+        def predict_batch(self, states, questions):
+            raise AssertionError("the harness may not call this: no model=, no requests")
+
+    dataset = Dataset([Example("s1", Q, {"intent": "a"}), Example("s2", Q, {"intent": "a"})])
+    runner = UntypedBatch({"s1": {"intent": choice_answer("a")}, "s2": {"intent": choice_answer("a")}})
+    report = evaluate(runner, dataset, evaluators=[ChoiceAccuracy()], batch_size=8, on_error="skip")
+    assert report.overall["choice_accuracy"] == 1.0, "scored one predict at a time"
+    assert not report.config.get("errored"), "a batch entry point in an unknown shape is not an error"
+
+
+def test_evaluate_scores_a_runner_with_no_batch_entry_point():
+    dataset = Dataset([Example("s1", Q, {"intent": "a"}), Example("s2", Q, {"intent": "a"})])
+    runner = StubRunner({"s1": {"intent": choice_answer("a")}, "s2": {"intent": choice_answer("a")}})
+    report = evaluate(runner, dataset, evaluators=[ChoiceAccuracy()], batch_size=8)
+    assert report.overall["choice_accuracy"] == 1.0
+
+
+def test_evaluate_batches_a_pass_through_wrapper_positionally():
+    """A wrapper that forwards `*args, **kwargs` takes the positional call, whatever it names."""
+    class PassThrough(StubRunner):
+        def __init__(self, by_state):
+            super().__init__(by_state)
+            self.calls = []
+
+        def predict_batch(self, *args, **kwargs):
+            self.calls.append((args, kwargs))
+            return [{"model": "m", "answers": self.by_state[s]} for s in args[0]]
+
+    dataset = Dataset([Example("s1", Q, {"intent": "a"}), Example("s2", Q, {"intent": "a"})])
+    runner = PassThrough({"s1": {"intent": choice_answer("a")}, "s2": {"intent": choice_answer("a")}})
+    report = evaluate(runner, dataset, evaluators=[ChoiceAccuracy()], batch_size=8)
+    assert len(runner.calls) == 1
+    assert runner.calls[0][0] == (["s1", "s2"], Q)
+    assert runner.calls[0][1] == {"model": None, "batch_size": 8}
+    assert report.overall["choice_accuracy"] == 1.0
+
+
 def test_evaluate_skips_errors_when_asked():
     class Boom(StubRunner):
         def predict(self, state, questions, model=None):

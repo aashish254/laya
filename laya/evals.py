@@ -2,8 +2,10 @@
 
 Pure Python plus numpy, and free of torch at import time, so the metric math and the dataset
 parsing can be unit tested with no weights. `evaluate` only needs a runner with a
-``predict(state, questions, model=...)`` method (and optionally a ``predict_batch``), so a
-fixture runner stands in for a checkpoint in tests.
+``predict(state, questions, model=...)`` method, plus -- for ``batch_size`` above 1 -- a
+``predict_batch`` in either of the two shapes the repo ships: the positional one, or the
+per-request-dict one `Router.predict_batch` documents. A fixture runner stands in for a
+checkpoint in tests.
 
 The report is deterministic for a fixed runner: the same dataset produces the same numbers, and
 ``EvalReport.compare`` turns a baseline into a pass/fail with the per-metric deltas, which is what
@@ -11,6 +13,7 @@ the CI gate consumes.
 """
 from __future__ import annotations
 
+import inspect
 import json
 import statistics
 import time
@@ -277,10 +280,52 @@ def _aggregate(cases: Sequence[Dict[str, Any]], evaluators: Sequence[Evaluator])
     return out
 
 
+# The two batch call shapes the repo ships. `RouterRunner.predict_batch(states, questions,
+# model=..., batch_size=...)` is the positional one; `Router.predict_batch(requests, ...)` takes
+# one dict per request, the form `route_batch` and the `laya-evals` CLI document.
+_BATCH_STATES = "states"
+_BATCH_REQUESTS = "requests"
+
+
+def _batch_form(runner: Any) -> Optional[str]:
+    """Return which batch call `runner` accepts, or ``None`` to score it one ``predict`` at a time.
+
+    Deliberately not ``hasattr(runner, "predict_batch")``: having a batch entry point and being
+    callable the way this harness calls it are different claims, and the attribute test returned
+    true for ``Router`` -- the one real runner whose ``predict(state, questions, model=...)``
+    matches the contract `evaluate` states. Every chunk of more than one example then raised
+    ``TypeError: ... unexpected keyword argument 'model'``, which under ``on_error="skip"`` became
+    a report with zero cases and an empty ``overall``.
+    """
+    fn = getattr(runner, "predict_batch", None)
+    if fn is None:
+        return None
+    try:
+        params = list(inspect.signature(fn).parameters.values())
+    except (TypeError, ValueError):
+        # Not introspectable (a C-level or hand-rolled ``__call__``): keep the call this harness
+        # made before the shape was checked, rather than silently dropping to single predicts.
+        return _BATCH_STATES
+    if any(p.name == "model" or p.kind is p.VAR_KEYWORD for p in params):
+        return _BATCH_STATES
+    positional = [p for p in params if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
+    # A bound method, so `positional[0]` is the batch argument itself.
+    if positional and positional[0].name == "requests":
+        return _BATCH_REQUESTS
+    return None
+
+
 def evaluate(runner: Any, dataset: Dataset, evaluators: Optional[Sequence[Evaluator]] = None,
              batch_size: Optional[int] = None, on_error: str = "fail",
              config: Optional[Dict[str, Any]] = None) -> EvalReport:
     """Run `runner` over `dataset`, aggregating per-answer metrics overall and per slice.
+
+    `runner` needs a ``predict(state, questions, model=...)`` method, and for `batch_size` above 1
+    a ``predict_batch`` in either shape the repo ships: the positional
+    ``predict_batch(states, questions, model=..., batch_size=...)``, or the per-request-dict form
+    `Router.predict_batch` takes -- ``predict_batch([{"state": ..., "questions": ...,
+    "model": ...}, ...], batch_size=...)``. A runner that offers neither is scored one ``predict``
+    at a time, which is slower but not wrong.
 
     `on_error` is ``"fail"`` (re-raise a runner error) or ``"skip"`` (record it and continue),
     the latter for evaluating a flaky fleet without aborting the whole run.
@@ -292,14 +337,15 @@ def evaluate(runner: Any, dataset: Dataset, evaluators: Optional[Sequence[Evalua
     latencies: List[float] = []
     errors: List[Dict[str, Any]] = []
     examples = dataset.examples
-    can_batch = batch_size is not None and batch_size > 1 and hasattr(runner, "predict_batch")
+    # Only worth grouping if the runner can be handed the group in one call at all.
+    batch_form = _batch_form(runner) if batch_size is not None and batch_size > 1 else None
 
     index = 0
     while index < len(examples):
         # Batches only when the runner can share a forward pass: consecutive examples with the
         # same checkpoint and identical questions. Otherwise every example is one predict.
         chunk = [examples[index]]
-        if can_batch:
+        if batch_form:
             signature = (examples[index].model,
                          json.dumps(examples[index].questions, sort_keys=False, default=str))
             while (index + len(chunk) < len(examples) and len(chunk) < batch_size
@@ -309,8 +355,15 @@ def evaluate(runner: Any, dataset: Dataset, evaluators: Optional[Sequence[Evalua
         started = time.perf_counter()
         try:
             if len(chunk) > 1:
-                results = runner.predict_batch([e.state for e in chunk], chunk[0].questions,
-                                               model=chunk[0].model, batch_size=batch_size)
+                if batch_form == _BATCH_REQUESTS:
+                    # The chunk already shares one checkpoint and one question schema, so the
+                    # per-request dicts carry exactly what the positional call would pass.
+                    results = runner.predict_batch(
+                        [{"state": e.state, "questions": e.questions, "model": e.model}
+                         for e in chunk], batch_size=batch_size)
+                else:
+                    results = runner.predict_batch([e.state for e in chunk], chunk[0].questions,
+                                                   model=chunk[0].model, batch_size=batch_size)
             else:
                 results = [runner.predict(chunk[0].state, chunk[0].questions, model=chunk[0].model)]
         except Exception as exc:  # noqa: BLE001 -- honoured by on_error
