@@ -36,6 +36,8 @@
 
 ::: laya.shortlist.embed_fn_from_agent
 
+::: laya.shortlist.cached_embed_fn
+
 ## Calibration and training
 
 ::: laya.common.confidence_from_probs

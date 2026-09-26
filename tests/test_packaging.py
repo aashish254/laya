@@ -2,6 +2,7 @@
 
 Text parsing, not tomllib: the floor is 3.10 and tomllib arrives in 3.11.
 """
+import ast
 import os
 import re
 import sys
@@ -229,6 +230,41 @@ for _dirpath, _dirnames, _filenames in os.walk("."):
 
 check("extras/every referenced extra is declared",
       sorted(set(_referenced_extras) - _declared_extras), [])
+
+# --------------------------------------------------------------- the API reference
+# `laya.__all__` is what `from laya import *` ships and what the README tells people to call, so
+# an export no page under docs/ names cannot be looked up at all. `cached_embed_fn` was one: the
+# README documents wrapping an embedder in it, each of its three shortlisting siblings has a
+# `:::` directive in reference/helpers.md, and it appeared on no docs page.
+#
+# Only the export list is read, never an attribute, so no lazy name resolves and no checkpoint is
+# touched. It is read from the source rather than imported: an editable install registers a
+# meta-path finder that wins over the `sys.path.insert` this suite does at the top, so
+# `import laya` silently returns *another checkout's* package -- which the mutation check caught.
+def _exported_names():
+    tree = ast.parse(read(os.path.join("laya", "__init__.py")))
+    for node in tree.body:
+        targets = getattr(node, "targets", [])
+        if isinstance(node, ast.Assign) and any(getattr(t, "id", None) == "__all__" for t in targets):
+            value = node.value
+            if isinstance(value, (ast.List, ast.Tuple, ast.Set)):
+                return [e.value for e in value.elts if isinstance(e, ast.Constant)]
+            return []          # computed `__all__`: the guard below reports it rather than passing
+    return []
+
+
+_docs_pages = [p for p in _md if p.split(os.sep)[0] == "docs"]
+_docs_text = "".join(read(p) for p in _docs_pages)
+_export_list = _exported_names()
+# Guards, not formalities: an empty page list or an unreadable `__all__` would let the sweep below
+# pass without checking anything.
+check_true("docs/reference pages found under docs/", len(_docs_pages) >= 8, _docs_pages[:3])
+check_true("docs/__all__ read as a literal from laya/__init__.py",
+           len(_export_list) >= 20, len(_export_list))
+
+_unreferenced = [n for n in _export_list if not re.search(r"\b%s\b" % re.escape(n), _docs_text)]
+check_true("docs/every exported name appears on a docs page",
+           not _unreferenced, "named nowhere in docs/: %s" % _unreferenced)
 
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))
 for f in FAIL:
