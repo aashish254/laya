@@ -45,19 +45,25 @@ import json, sys
 import laya
 
 def audit(ctx):
-    record = {
-        "run_id": ctx.run_id,
-        "model": ctx.model,
-        "routing": ctx.results[0].get("routing") if ctx.results else None,
-        "answers": ctx.results[0]["answers"] if ctx.results else None,
-        "usage": ctx.usage,
-        "elapsed_ms": round(ctx.elapsed_ms or 0.0, 3),
-    }
-    print(json.dumps(record), file=sys.stderr)
-    # ship_to_service(record)
+    for state, result in zip(ctx.states, ctx.results or []):
+        record = {
+            "run_id": ctx.run_id,
+            "model": ctx.model,
+            "state": state,
+            "routing": result.get("routing"),
+            "answers": result["answers"],
+            "usage": result.get("usage"),
+            "call_usage": ctx.usage,
+            "call_elapsed_ms": round(ctx.elapsed_ms or 0.0, 3),
+        }
+        print(json.dumps(record), file=sys.stderr)
+        # ship_to_service(record)
 
 agent = laya.load("convaiinnovations/laya", on_predict_end=audit)
 ```
+
+One hook call covers the whole call, so the loop writes one record per decision; see
+[Batch](#batch) for the same shape on `predict_batch`.
 
 A full runnable version is in [`examples/hooks/audit.py`](../../examples/hooks/audit.py).
 
@@ -143,7 +149,7 @@ class Blocked(Exception):
     pass
 
 def guard(ctx):
-    text = str(ctx.states[0]).lower()
+    text = " ".join(str(state) for state in ctx.states).lower()
     if "ignore previous instructions" in text:
         raise Blocked("prompt injection")
 
@@ -155,19 +161,26 @@ except Blocked:
     handle_block()
 ```
 
+A start hook sees every state of the call, so test them all: reading only `ctx.states[0]` lets the
+rest of a `predict_batch` call through.
+
 ## Confidence gate
 
 Rewrite a low-confidence answer, or annotate it.
 
 ```python
 def gate(ctx):
-    answer = ctx.results[0]["answers"].get("dept")
-    if answer and answer["confidence"] < 0.6:
-        answer["choice"] = "human-review"
-        answer["gated"] = True
+    for result in ctx.results or []:
+        answer = result["answers"].get("dept")
+        if answer and answer["confidence"] < 0.6:
+            answer["choice"] = "human-review"
+            answer["gated"] = True
 
 agent = laya.load("convaiinnovations/laya", on_predict_end=gate)
 ```
+
+`ctx.results` holds one dict per state of the call, so the loop annotates every answer that
+misses the threshold, not only the first state's.
 
 ## Routing pin
 

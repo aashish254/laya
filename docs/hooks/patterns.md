@@ -41,18 +41,25 @@ model, the routing decision, usage and latency.
 import json
 
 def audit(ctx):
-    json.dump({
-        "run_id": ctx.run_id,
-        "model": ctx.model,
-        "routing": ctx.results[0].get("routing") if ctx.results else None,
-        "answers": ctx.results[0]["answers"] if ctx.results else None,
-        "usage": ctx.usage,
-        "elapsed_ms": round(ctx.elapsed_ms or 0.0, 3),
-    }, sys.stdout)
-    sys.stdout.write("\n")
+    for state, result in zip(ctx.states, ctx.results or []):
+        json.dump({
+            "run_id": ctx.run_id,
+            "model": ctx.model,
+            "state": state,
+            "routing": result.get("routing"),
+            "answers": result["answers"],
+            "usage": result.get("usage"),
+            "call_usage": ctx.usage,
+            "call_elapsed_ms": round(ctx.elapsed_ms or 0.0, 3),
+        }, sys.stdout)
+        sys.stdout.write("\n")
 
 laya.load("convaiinnovations/laya", on_predict_end=audit)
 ```
+
+A hook fires once per call, and a `predict_batch` call carries every state in it, so the record is
+written per decision: `ctx.states` and `ctx.results` are aligned by index. `ctx.usage` and
+`ctx.elapsed_ms` are totals for the whole call; each result carries its own `usage`.
 
 Make it lenient if losing a log line must not fail a request: `hooks_raise=False`. Make it
 strict if the audit trail is a compliance requirement.
@@ -131,11 +138,14 @@ class Blocked(Exception):
     pass
 
 def guard(ctx):
-    if "ssn" in str(ctx.states[0]).lower():
+    if any("ssn" in str(state).lower() for state in ctx.states):
         raise Blocked("possible PII in state")
 
 laya.load("convaiinnovations/laya", on_predict_start=guard)
 ```
+
+Test it against the state shape. A guard that only reads `ctx.states[0]` blocks a single call and
+lets a `predict_batch` call put every remaining state through the forward pass.
 
 ### Confidence gating
 
@@ -144,13 +154,17 @@ logic. This is a result mutation, not a rejection.
 
 ```python
 def gate(ctx):
-    answer = ctx.results[0]["answers"].get("dept")
-    if answer and answer["confidence"] < 0.6:
-        answer["choice"] = "human-review"
-        answer["gated"] = True
+    for result in ctx.results or []:
+        answer = result["answers"].get("dept")
+        if answer and answer["confidence"] < 0.6:
+            answer["choice"] = "human-review"
+            answer["gated"] = True
 
 laya.load("convaiinnovations/laya", on_predict_end=gate)
 ```
+
+Mutate through `ctx.results`, which holds one dict per state of the call: gating only the first
+one ships every other low-confidence answer unannotated.
 
 ### Routing override
 
@@ -353,13 +367,15 @@ By `on_predict_end` the model has already tokenized the state. Redact in `on_pre
 ### Per-question logic in a per-call hook
 
 There is one `PredictContext` per call, and one forward pass answers every question. There are no
-per-question events. Iterate the answers inside `on_predict_end`.
+per-question events. Iterate the answers inside `on_predict_end`, and iterate the states too: on a
+batch, one context carries every state of the call.
 
 ```python
 def flag(ctx):
-    for qid, answer in ctx.results[0]["answers"].items():
-        if answer.get("confidence", 1.0) < 0.5:
-            alert(qid, ctx.run_id)
+    for result in ctx.results or []:
+        for qid, answer in result["answers"].items():
+            if answer.get("confidence", 1.0) < 0.5:
+                alert(qid, ctx.run_id)
 ```
 
 ### Recursive predict
@@ -377,7 +393,7 @@ def enrich(ctx):
     if getattr(ctx, "_enriched", False):
         return
     ctx._enriched = True
-    ctx.results = [enricher.predict(ctx.states[0], EXTRA_QUESTIONS)]
+    ctx.results = [enricher.predict(state, EXTRA_QUESTIONS) for state in ctx.states]
 ```
 
 ### Plain callables in `hooks=`
