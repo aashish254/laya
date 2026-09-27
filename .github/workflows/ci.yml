@@ -86,12 +86,26 @@ jobs:
           # `mcp` so laya[mcp] resolution and the laya.mcp layer are both exercised, and
           # `serve` because laya.serve and examples/server.py both import fastapi -- without
           # it every test that touches them skips itself silently and passes.
-          pip install -e ".[mcp,serve]" httpx
+          # `langchain` for the same reason again: tests/test_langchain.py is listed below, and
+          # without langchain-core that file's classes fall back to `RunnableSerializable =
+          # object` and all its checks still pass -- measured identical, PASS: 31 / FAIL: 0.
+          pip install -e ".[mcp,serve,langchain]" httpx
           # The pytest-style suites need the runner; nothing else in this job uses it.
           pip install pytest
 
       - name: Import check
         run: python -c "import laya; print(laya.__version__); print(sorted(laya.__all__))"
+
+      # The install above is what makes the LangChain suites mean anything, and a resolved
+      # dependency graph is easy to change without noticing. Say so by name rather than
+      # dropping back to the fallback base class and reporting a green job.
+      - name: LangChain integration runs on the real base class
+        run: |
+          python -c "from laya.integrations.langchain import RunnableSerializable; \
+            assert RunnableSerializable is not object, \
+            'langchain-core is missing: laya.integrations.langchain fell back to a plain object, ' \
+            'so the LangChain suites in this job test a shape no install produces'"
+          python tests/test_langchain_real_mode.py
 
       - name: Routing and language-detection tests
         run: |
