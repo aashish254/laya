@@ -292,15 +292,22 @@ def cached_embed_fn(
 
         embed_fn = cached_embed_fn(embed_fn_from_agent(agent))
 
-    leaves the first call unchanged and reduces each repeat call to embedding the new
-    query alone.
+    leaves the first call's embedder work unchanged and reduces each repeat call to
+    embedding the new query alone.
 
     Lookups are exact string matches. Texts missing from the cache are deduplicated and
     embedded in a single ``embed_fn`` call, so a cold cache costs the same number of
     batched calls as the unwrapped function. Rows are stored as float32; the cache holds
     at most ``maxsize`` strings and then evicts the least recently used entry, bounding
     memory at about ``maxsize * dim * 4`` bytes. Nothing is cached when ``embed_fn``
-    raises or returns a bad shape.
+    raises or returns a bad shape. A non-finite value is not a bad shape: ``NaN``,
+    ``inf`` and ``-inf`` become ``0.0`` on the way in, the same replacement
+    :func:`_embeddings` makes for an unwrapped embedder, and the repaired row is then
+    *cached*. One transient ``NaN`` in an option's embedding therefore ranks that option
+    as a zero vector on every later request until ``cache_clear()``, while the unwrapped
+    embedder would simply re-embed it -- shortlist membership can differ between the two
+    on the second call. The float32 storage shows in the scores too: a wrapped first
+    call can differ from the unwrapped one in its last digits.
 
     The wrapper is safe to share between threads: the lock covers only cache reads and
     writes, never the embedding call. The returned callable carries ``cache_info()`` --
