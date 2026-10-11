@@ -46,11 +46,12 @@ answers and `low_confidence: true` on the ones below the threshold; with no
 threshold set, none of those three keys are sent, and that absence is the report.
 Optional extensions are validated when present.
 
-`/v1/systemone` is the only endpoint the client calls, and it has no standalone routing method:
-`laya-client` exposes `predict` and `health` and nothing else, and the live integration test asserts the
-server answers `404` for `/v1/route`. The controls the endpoint does honour are per-request, and each is
-sent only when the caller supplied the option -- an absent option leaves the deployment's own
-`Router(...)` settings in charge instead of overriding them with a client-side default:
+`predict` posts `/v1/systemone` and `health` gets `/health` -- those two calls are the client's whole
+network surface, and `/v1/systemone` is the only inference endpoint among them. There is no standalone
+routing method: `laya-client` exposes `predict` and `health` and nothing else, and the live integration
+test asserts the server answers `404` for `/v1/route`. The controls the endpoint does honour are
+per-request, and each is sent only when the caller supplied the option -- an absent option leaves the
+deployment's own `Router(...)` settings in charge instead of overriding them with a client-side default:
 
 | option | request field |
 | --- | --- |
