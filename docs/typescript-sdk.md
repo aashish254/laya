@@ -46,11 +46,12 @@ answers and `low_confidence: true` on the ones below the threshold; with no
 threshold set, none of those three keys are sent, and that absence is the report.
 Optional extensions are validated when present.
 
-`/v1/systemone` is the only endpoint the client calls, and it has no standalone routing method:
-`laya-client` exposes `predict` and `health` and nothing else, and the live integration test asserts the
-server answers `404` for `/v1/route`. The controls the endpoint does honour are per-request, and each is
-sent only when the caller supplied the option -- an absent option leaves the deployment's own
-`Router(...)` settings in charge instead of overriding them with a client-side default:
+`predict` posts `/v1/systemone` and `health` gets `/health` -- those two calls are the client's whole
+network surface, and `/v1/systemone` is the only inference endpoint among them. There is no standalone
+routing method: `laya-client` exposes `predict` and `health` and nothing else, and the live integration
+test asserts the server answers `404` for `/v1/route`. The controls the endpoint does honour are
+per-request, and each is sent only when the caller supplied the option -- an absent option leaves the
+deployment's own `Router(...)` settings in charge instead of overriding them with a client-side default:
 
 | option | request field |
 | --- | --- |
@@ -62,12 +63,18 @@ sent only when the caller supplied the option -- an absent option leaves the dep
 | `headMaxLen` | `head_max_len` |
 | `minConfidence` | `min_confidence` |
 
-An option that cannot mean anything is refused locally, before the request goes out: a blank `task`, a
-budget that is not a positive integer, a threshold outside `[0, 1]`, or a threshold map that is empty
-or holds a value outside `[0, 1]`. Nothing is silently ignored. Laya's
+An option that cannot mean anything is refused locally, before the request goes out: a blank `model`,
+`task`, `lang` or `langGuess`, a `maxLen` or `headMaxLen` that is not a positive integer, a
+`minConfidence` outside `[0, 1]`, or a `minConfidence` map that is empty, holds a value outside
+`[0, 1]`, or is keyed by a bucket core cannot produce. Nothing is silently ignored. Laya's
 public `/health` returns `status`, `loaded`, `revisions`, `device`, `device_is_preference`,
-`checkpoint_devices`, and `cpu_fallbacks` -- the same seven keys the laya-serve deployment
-page documents; see [HTTP API](http-api.md). Prediction never probes health first.
+`checkpoint_devices`, and `cpu_fallbacks`. Prediction never probes health first.
+
+The laya-serve deployment page documents nine keys in all, and two of them are conditional:
+`idle_unload_seconds` and `idle_seconds` ride along only while idle unloading is enabled. The smaller
+branch is the unauthenticated one -- on a deployment that set `LAYA_API_KEY`, a probe with no bearer
+gets `{"status": "ok"}` and nothing else, which is why the client requires only `status` and checks the
+rest when they arrive; see [HTTP API](http-api.md).
 
 FastAPI detail strings and validation arrays are preserved as `LayaAPIError`
 messages/details. Structured error envelopes from compatible backends are also
