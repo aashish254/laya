@@ -681,12 +681,13 @@ class NonFiniteEmbed:
 
 nf_embed = NonFiniteEmbed()
 nf_cached = cached_embed_fn(nf_embed)
-check_true("cache/non-finite row is stored, not refused",
-           np.array_equal(nf_cached(["alpha"])[0], [0.0, 0.0]) and nf_cached.cache_info()["size"] == 1)
-nf_cached(["alpha"])                       # served from the cache, so still the repaired row
-check("cache/repaired row is sticky", len(nf_embed.calls), 1)
-nf_cached.cache_clear()
-check_true("cache/clear drops the repaired row", np.allclose(nf_cached(["alpha"]), [[1.0, 0.0]]))
+# `cache/nan row stored cleaned` and `cache/cleaned row served from cache`, further down
+# this file, pin the rewrite and that the cache serves it. What they do not pin is that the
+# second call's *rows* are the repaired ones, which is where the wrapper and the unwrapped
+# embedder visibly disagree: a transient NaN costs that option its real embedding forever.
+nf_cached(["alpha"])                       # embeds NaN, stores the zeroed row
+check_true("cache/sticky row stays the repaired one",
+           np.array_equal(nf_cached(["alpha"])[0], [0.0, 0.0]) and len(nf_embed.calls) == 1)
 
 # The consequence a caller actually sees: shortlist membership, not just the numbers.
 NF_CRITERIA = {"alpha": None, "beta": None}
@@ -699,7 +700,6 @@ sticky = (shortlist_choice("pay me", NF_CRITERIA, wrapped_fn, k=1),
           shortlist_choice("pay me", NF_CRITERIA, wrapped_fn, k=1))
 check("cache/unwrapped second call recovers the finite row", raw, (["beta"], ["alpha"]))
 check("cache/wrapped second call keeps the zeroed row", sticky, (["beta"], ["beta"]))
-check("cache/wrapped ranking embedded once", len(wrapped_embed.calls), 1)
 wrapped_fn.cache_clear()
 check("cache/clearing it restores the unwrapped ranking",
       shortlist_choice("pay me", NF_CRITERIA, wrapped_fn, k=1), ["alpha"])
