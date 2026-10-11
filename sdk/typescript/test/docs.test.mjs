@@ -11,6 +11,12 @@
  * client hands to `fetch` is captured, and the table is compared against the keys that were really put
  * on the wire. Nothing here transcribes the client's option list -- if `body()` gains or drops a control
  * the table has to move with it, in both directions.
+ *
+ * The same seam holds the page's two other statements about the client's own behaviour: the paths it
+ * calls, and the controls it refuses before a request goes out. Both had drifted the same way -- the
+ * page promised `/v1/systemone` was "the only endpoint the client calls" while `health()` had long been
+ * issuing `GET /health`, and its refusal list named only a blank `task`, while `body()` also refuses a
+ * blank `model`, `lang` and `langGuess` and a `minConfidence` map core would 422.
  */
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
@@ -30,6 +36,9 @@ const RESULT = {
   usage: { input_tokens: 4, output_tokens: 0 },
 };
 
+/** The liveness answer, which is the only `/health` payload every caller is guaranteed to get. */
+const HEALTH = { status: 'ok' };
+
 /** The request body the client would send for `options`, minus `state` and `questions`. */
 async function controls(options) {
   let body;
@@ -44,9 +53,47 @@ async function controls(options) {
   return Object.keys(rest).sort();
 }
 
+/** The `[method, path]` pairs one call really put on the wire, and the error it threw, if any. */
+async function attempt(run) {
+  const seen = [];
+  const laya = new Laya({ fetch: async (url, init) => {
+    const path = new URL(url).pathname;
+    seen.push([init.method, path]);
+    const payload = path === '/health' ? HEALTH : RESULT;
+    return new Response(JSON.stringify(payload), { headers: { 'content-type': 'application/json' } });
+  } });
+  let error = null;
+  try {
+    await run(laya);
+  } catch (cause) {
+    error = cause;
+  }
+  return { seen, error };
+}
+
+/** The page as prose, so a claim is checked against the sentence that makes it rather than the file. */
+function sentences(page) {
+  return page.split(/(?<=[.!?])\s+/);
+}
+
 /** A value for every option the table names, chosen to survive the client's own validation. */
 const OPTION_VALUES = { model: 'english', task: 'typed', lang: 'de', langGuess: 'en',
   maxLen: 512, headMaxLen: 24, minConfidence: 0.8 };
+
+/** A value for each option that cannot mean anything, which the client must refuse before it sends. */
+const BAD_OPTION_VALUES = [
+  ['model', '  '],
+  ['task', ''],
+  ['lang', ' '],
+  ['langGuess', ''],
+  ['maxLen', 0],
+  ['maxLen', 512.5],
+  ['headMaxLen', -3],
+  ['minConfidence', 1.5],
+  ['minConfidence', {}],
+  ['minConfidence', { 'choice:2': 2 }],
+  ['minConfidence', { 'choice:7': 0.5 }],
+];
 
 function controlTable(page) {
   const lines = page.split('\n');
@@ -88,6 +135,77 @@ test('the design page names every control the client puts on the wire, and only 
   // the deployment's own Router settings answer rather than a client-side default.
   assert.deepEqual(await controls({}), [],
     'a bare predict() sends state and questions only');
+});
+
+test('the client calls exactly the endpoints the page says it calls', async () => {
+  const page = readFileSync(PAGE, 'utf8');
+  const paths = new Map();
+  for (const [method, run] of [['predict', l => l.predict('the state', QUESTIONS, {})],
+                               ['health', l => l.health()]]) {
+    const { seen, error } = await attempt(run);
+    assert.equal(error, null, `${method}() must reach the fixture, got ${error && error.name}: ${error && error.message}`);
+    assert.equal(seen.length, 1, `${method}() made ${JSON.stringify(seen)}, and the page describes one request per call`);
+    paths.set(method, seen[0]);
+  }
+  assert.deepEqual([...paths], [['predict', ['POST', '/v1/systemone']], ['health', ['GET', '/health']]],
+    "the client's network surface moved; the page and this test describe POST /v1/systemone and GET /health");
+
+  // Each call has to be stated by a sentence that names the method and the path it reaches. The page
+  // used to promise `/v1/systemone` was "the only endpoint the client calls" in the same sentence that
+  // introduced `health`, while `health()` had been issuing `GET /health` the whole time.
+  for (const [method, [, path]] of paths) {
+    const stated = sentences(page).find(s => s.includes('`' + method + '`') && s.includes('`' + path + '`'));
+    assert.ok(stated, `the client sends ${paths.get(method)[0]} ${path} from ${method}(), which no sentence of the page pairs with that method`);
+  }
+
+  // An exclusivity claim is decidable at the same seam: "the only endpoint the client calls" holds only
+  // if the client calls one path, and "the only <kind> endpoint" holds only if the sentence names the
+  // path of every method of that kind. `health` probes; only `predict` carries a decision.
+  const KINDS = { inference: ['predict'] };
+  for (const sentence of sentences(page)) {
+    const claim = /\bthe only\b[^.]{0,40}?\bendpoints?\b/i.exec(sentence);
+    if (!claim) continue;
+    const kind = (/\bthe only\s+([\w-]+)\s+endpoints?\b/i.exec(sentence) || [])[1];
+    const covered = kind === undefined ? [...paths.keys()] : KINDS[kind.toLowerCase()];
+    assert.ok(covered, `the page claims ${JSON.stringify(claim[0])} and this test cannot say which client `
+      + `methods "${kind}" covers; add it to KINDS`);
+    if (kind === undefined) {
+      assert.equal(covered.length, 1, `the page calls one endpoint the only one the client calls, but the `
+        + `client calls ${covered.length}: ${JSON.stringify([...paths.values()])}`);
+    }
+    for (const method of covered) {
+      assert.ok(sentence.includes('`' + paths.get(method)[1] + '`'),
+        `the page claims ${JSON.stringify(claim[0])} without naming ${paths.get(method)[1]}, which ${method}() calls`);
+    }
+  }
+});
+
+test('the page names exactly the controls the client refuses before the request goes out', async () => {
+  const page = readFileSync(PAGE, 'utf8');
+  const table = controlTable(page);
+  const refusal = sentences(page).filter(s => /refused locally/.test(s));
+  assert.equal(refusal.length, 1, `the page must state its local refusals in exactly one sentence, found ${refusal.length}`);
+  // The sentence before the list ends in a colon, so the split carries the table into it. The table
+  // names every option, and answering from it would let the prose omit a refusal the client makes --
+  // so the rows come out first, and only the paragraph's own words are read.
+  const stated = refusal[0].split('\n').filter(line => !line.startsWith('|')).join('\n');
+  // Only the names the control table also lists count as options: `[0, 1]` and `LAYA_API_KEY` are prose.
+  const named = new Set([...stated.matchAll(/`(\w+)`/g)].map(([, name]) => name).filter(n => table.has(n)));
+
+  const refused = new Set();
+  for (const [option, value] of BAD_OPTION_VALUES) {
+    assert.ok(table.has(option), `this fixture refuses ${option}, which the page's table no longer lists`);
+    const { seen, error } = await attempt(l => l.predict('the state', QUESTIONS, { [option]: value }));
+    assert.ok(error !== null, `predict({ ${option}: ${JSON.stringify(value)} }) must be refused locally, and it was accepted`);
+    assert.equal(error.name, 'LayaValidationError',
+      `predict({ ${option}: ${JSON.stringify(value)} }) threw ${error.name}, not a local validation error`);
+    assert.deepEqual(seen, [],
+      `predict({ ${option}: ${JSON.stringify(value)} }) reached the server (${JSON.stringify(seen)}) before refusing`);
+    refused.add(option);
+  }
+  assert.deepEqual([...named].sort(), [...refused].sort(),
+    `the page lists ${JSON.stringify([...named].sort())} as refused locally; the client refuses `
+    + `${JSON.stringify([...refused].sort())}`);
 });
 
 test('no sentence on the page claims a control it documents is unsupported', async () => {
