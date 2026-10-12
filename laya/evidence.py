@@ -34,7 +34,13 @@ def _entry(state: str, reason: str, detail: Optional[Dict[str, Any]] = None) -> 
 
 
 def inspect_calibration(config: Dict[str, Any]) -> Dict[str, Any]:
-    """Evidence state of the persisted calibration fit in a checkpoint config."""
+    """Evidence state of the persisted calibration fit in a checkpoint config.
+
+    The overall state folds the per-type entries: `PRESENT` where every type fitted cleanly,
+    `MISSING` where the block positively records zero items, `INSUFFICIENT` where a recorded
+    limitation -- or an unreadable type beside one that was read -- says the evidence falls short,
+    and `UNKNOWN` where the block holds nothing this module can read at all.
+    """
     training = config.get("training")
     if not isinstance(training, dict):
         return _entry(UNKNOWN, "legacy checkpoint: no training metadata persisted; cannot tell whether calibration ran")
@@ -65,9 +71,22 @@ def inspect_calibration(config: Dict[str, Any]) -> Dict[str, Any]:
         else:
             types[name] = _entry(PRESENT, "fitted with no recorded issues on %d items" % items,
                                  {"items": items, "temperature": entry.get("temperature")})
-    present = sum(1 for t in types.values() if t["state"] == PRESENT)
-    overall = PRESENT if types and present == len(types) else (
-        MISSING if types and all(t["state"] == MISSING for t in types.values()) else INSUFFICIENT)
+    states = [t["state"] for t in types.values()]
+    if not states or all(state == UNKNOWN for state in states):
+        # Nothing in this block can be read as a fit, so nothing is known about its limitations --
+        # and `INSUFFICIENT` reports a limitation against a fit that was made. Reaching that verdict
+        # from an empty block, or from entries whose shape this module cannot read, manufactures a
+        # state out of absent input, which is what the module docstring rules out. `MISSING` stays
+        # reserved for what the artifact positively records: a type that says `items: 0` below. One
+        # readable entry beside the unreadable ones is still a fit to judge, so it decides the verdict
+        # as before. The reason is the only part of this result a summary prints for an UNKNOWN
+        # verdict, so it says which of the two shapes was found.
+        reason = ("calibration block records no question type" if not types
+                  else "every calibration entry is malformed; nothing to read")
+        return {"state": UNKNOWN, "reason": reason, "types": types}
+    present = sum(1 for state in states if state == PRESENT)
+    overall = PRESENT if present == len(states) else (
+        MISSING if all(state == MISSING for state in states) else INSUFFICIENT)
     return {
         "state": overall,
         "types": types,

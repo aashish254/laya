@@ -569,6 +569,13 @@ any upstream `issues` text (not fitted, below `MIN_TYPE_N`/`CALIB_WARN_N`, clamp
 fit) is `INSUFFICIENT`; a clean fit is `PRESENT`. The helper trusts the persisted `issues`
 written by #933 instead of keeping a second numeric threshold source.
 
+The overall verdict folds those per-type states: `PRESENT` where every type fitted cleanly,
+`MISSING` where they all recorded zero items, and `INSUFFICIENT` where anything falls short beside
+something this helper could read. A block that records no question type at all, or only entries it
+cannot read, is `UNKNOWN` with a reason naming which of the two was found — `INSUFFICIENT` reports
+a limitation against a fit that was made, and the helper never claims that about a fit it cannot
+see.
+
 The eval report's identity fields (`schema`, `dataset_sha256`, `questions_sha256`, `laya_version`)
 are reported with the same semantics as `run`. The checkpoint↔report relationship is claimed only
 as a deterministic conflict: if both artifacts expose the same `dataset_sha256`/`questions_sha256`

@@ -62,7 +62,47 @@ mixed = calib({"training": {"laya_train_calibration": {
 check("mixed types overall -> INSUFFICIENT", mixed["state"], evidence.INSUFFICIENT)
 
 malformed = calib({"training": {"laya_train_calibration": {"choice": {"temperature": 1.0}}}})
-check("malformed entry -> UNKNOWN", malformed["types"]["choice"]["state"], evidence.UNKNOWN)
+# `get`, not indexing: this is the entry shape whose whole result changed, and a suite that aborts on
+# a missing key never reaches the checks that would say which one went.
+check("malformed entry -> UNKNOWN", malformed.get("types", {}).get("choice", {}).get("state"),
+      evidence.UNKNOWN)
+
+# ------------------------------------------------------ what the overall may claim
+# `INSUFFICIENT` is the state that reports a limitation against a fit that was made, so it is a
+# claim about a fit. Folded blindly it also came out for a block that records no type at all, or one
+# whose entries this module cannot read -- manufactured from absent input, which the module docstring
+# rules out. `format_summary` prints a reason only for an UNKNOWN verdict, so the wrong state also
+# hid the only explanation a reader gets. `MISSING` stays reserved for what the artifact positively
+# records: zero items.
+check("every entry unreadable -> UNKNOWN, not a claim about a fit",
+      calib({"training": {"laya_train_calibration": {"choice": {"temperature": 1.0}}}})["state"],
+      evidence.UNKNOWN)
+check("an empty calibration block -> UNKNOWN",
+      calib({"training": {"laya_train_calibration": {}}})["state"], evidence.UNKNOWN)
+_allbad = calib({"training": {"laya_train_calibration": {"choice": "junk", "score": []}}})
+# Both read through `get`, not indexing: a result that lost its reason or its per-type map has to
+# fail these checks by name, not abort the suite before the rest of it runs.
+check("and the two reasons say which shape was found",
+      [_allbad.get("reason"), calib({"training": {"laya_train_calibration": {}}}).get("reason")],
+      ["every calibration entry is malformed; nothing to read",
+       "calibration block records no question type"])
+check("the per-type map is still there to read beside that reason",
+      {name: t["state"] for name, t in (_allbad.get("types") or {}).items()},
+      {"choice": evidence.UNKNOWN, "score": evidence.UNKNOWN})
+# Over-correcting is the failure mode to hold against: one entry this module can judge is enough to
+# keep the verdict that reports a shortfall, and enough to keep `PRESENT` and `MISSING` folding.
+check("an unreadable entry beside a clean one is still INSUFFICIENT",
+      calib({"training": {"laya_train_calibration": {
+          "choice": {"items": 400, "temperature": 1.1, "issues": []},
+          "score": {"temperature": 1.0}}}})["state"], evidence.INSUFFICIENT)
+check("an unreadable entry beside a zero-item one is still INSUFFICIENT",
+      calib({"training": {"laya_train_calibration": {
+          "choice": {"items": 0, "temperature": 1.0, "issues": []},
+          "score": {"temperature": 1.0}}}})["state"], evidence.INSUFFICIENT)
+check("every type at zero items -> MISSING",
+      calib({"training": {"laya_train_calibration": {
+          "choice": {"items": 0, "temperature": 1.0, "issues": []},
+          "score": {"items": 0, "temperature": 1.0, "issues": []}}}})["state"], evidence.MISSING)
 
 # ------------------------------------------------------ one numeric source of truth
 # `items` is reported here, never judged: #964 deleted the local `_thresholds()` that compared it
@@ -154,6 +194,15 @@ check("the documented conflict pair is the one the code compares",
       sorted(re.findall(r"`([^`]+)`", " ".join(_claimed.split("/")))),
       sorted(evidence._IDENTITY_CONFLICT_KEYS))
 
+# The page now states the fold as well, including the case this suite caught the helper overstating.
+# Read the verdict off the sentence rather than quoting it: a page that moves the claim elsewhere, or
+# a code change that moves the state, fails here instead of quietly disagreeing.
+_block = (_page.split("A block that records no question type", 1)[1].split("was found", 1)[0]
+          if "A block that records no question type" in _page else "")
+check("the page's verdict for a calibration block with nothing to read is the code's",
+      re.findall(r"is `([A-Z]+)`", _block),
+      [calib({"training": {"laya_train_calibration": {}}})["state"]])
+
 # ------------------------------------------------------ relationship
 config = {"training": {"laya_train": {"laya_version": "0.3.28"}}}
 match = evidence.relate(config, {"config": {"laya_version": "0.3.28"}})
@@ -183,6 +232,18 @@ check("evidence CLI returns 0 on realistic pair", rc, 0)
 
 rc_bad = evals_cli.main(["evidence", "--checkpoint", os.path.join(tmp, "nope")])
 check("missing checkpoint dir -> usage error 2", rc_bad, 2)
+
+# The summary is where a reader meets the calibration verdict, and it prints a reason only for an
+# UNKNOWN state -- so a block that records nothing had to reach UNKNOWN for any explanation to
+# appear at all. On INSUFFICIENT it printed a claim about a fit and nothing to check it against.
+_empty_cal = os.path.join(tmp, "ckpt-empty-calibration")
+os.makedirs(_empty_cal)
+with open(os.path.join(_empty_cal, "rl_agent_config.json"), "w", encoding="utf-8") as f:
+    json.dump({"training": {"laya_train": {"base": "x"}, "laya_train_calibration": {}}}, f)
+_cal_summary = evidence.format_summary(evidence.inspect_checkpoint(_empty_cal))
+check_true("the summary reads an empty calibration block as UNKNOWN",
+           "calibration: UNKNOWN" in _cal_summary)
+check_true("and prints why", "calibration block records no question type" in _cal_summary)
 
 # ------------------------------------------------------ no torch required
 import subprocess
