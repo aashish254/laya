@@ -762,6 +762,10 @@ _refuses("shape/bool version", {"temperature": [1.0] * 3, "version": True},
          "version must be an integer")
 _refuses("shape/object version", {"temperature": [1.0] * 3, "version": {"v": 2}},
          "version must be an integer")
+# The identity a version-2 file records about the checkpoint its map was fitted for; the load
+# compares it against the object being loaded and warns on a mismatch.
+_FOREIGN_IDENTITY = {"model_id_or_path": "another/checkpoint", "subfolder": "another",
+                     "config": {"encoder": "another/encoder"}}
 # `version` is read with `int()`, which truncates, and the truncation is not cosmetic: `1.9`
 # became 1, which is below `CALIBRATION_VERSION`, and the arm of the load that a
 # below-`CALIBRATION_VERSION` file takes is the silent one ("version/below CALIBRATION_VERSION
@@ -774,6 +778,12 @@ _refuses("shape/non-integral float version", {"temperature": [1.0] * 3, "version
 _refuses("shape/non-integral float version above current", {"temperature": [1.0] * 3, "version": 2.5},
          "version must be an integer")
 _refuses("shape/non-integral string version", {"temperature": [1.0] * 3, "version": "1.5"},
+         "version must be an integer")
+# The same file in the shape that did the damage: a non-integral version *and* a foreign
+# checkpoint. At base the truncation moved it into the silent arm further down, so the map
+# installed and nothing was said -- which is the whole reason the truncation matters.
+_refuses("version/non-integral float naming another checkpoint",
+         {"temperature": [1.0] * 3, "version": 1.9, **_FOREIGN_IDENTITY},
          "version must be an integer")
 _refuses("shape/scalar by_options",
          {"temperature": [1.0] * 3, "temperature_by_options": 5}, "temperature_by_options")
@@ -810,8 +820,6 @@ check("shape/numeric string version still loads", version_ok.temperature, [1.1, 
 # model -- the back-compat contract, and exactly what `1.9` -> `1` abused. A stub with no identity
 # attributes still counts as a mismatch here (`getattr(obj, ..., None)` against the recorded
 # "another/checkpoint"), so the silence below is the skipped check, not matching identities.
-_FOREIGN_IDENTITY = {"model_id_or_path": "another/checkpoint", "subfolder": "another",
-                     "config": {"encoder": "another/encoder"}}
 _below = type("Stub", (), {})()
 with warnings.catch_warnings(record=True) as caught:
     warnings.simplefilter("always")
