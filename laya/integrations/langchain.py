@@ -253,8 +253,11 @@ def _can_batch(agent: Optional[Any] = None, base_url: Optional[str] = None,
 
     False for a remote deployment (`laya-serve` answers one request per POST), for a
     caller-supplied runner that only implements `predict`, and for a `Router` when per-call
-    hooks are configured: `Router.predict_batch` takes no per-call hooks, so the per-input
-    loop is what keeps them running.
+    hooks are configured. That last exclusion is this wrapper's own limit, not core's:
+    `_execute_batch` sends the Router-form call without the hook family, so the per-input loop
+    is what keeps the hooks running -- even though `laya/router.py::Router.predict_batch` does
+    take `hooks`, `on_predict_start`, `on_predict_end`, `hooks_raise` and `hooks_timeout`, and
+    the Agent form of the same call already forwards them.
     """
     if base_url:
         return False

@@ -319,13 +319,21 @@ graded = asyncio.run(evaluator.abatch(predictions))   # the async entry point, s
 ```
 
 The outputs are the same as calling `invoke` on each input in turn, including the confidence
-fallback on `LayaRouter` and the `action` (`raise` / `filter` / `annotate`) on `LayaGuardrail`. Two
+fallback on `LayaRouter` and the `action` (`raise` / `filter` / `annotate`) on `LayaGuardrail`. Three
 differences are worth knowing:
 
 - With `action="raise"`, the first violating input raises, so the batch stops there. Pass
   `return_exceptions=True` to get one outcome per input, exceptions included.
 - `batch()` shares one forward pass, so a failure fails the batch; that is also why
   `return_exceptions=True` falls back to the per-input loop.
+- Per-call hooks reach the shared forward pass on an `Agent`-backed node and not on a
+  `Router`-backed one. `laya/integrations/langchain.py::_execute_batch` forwards the hook family on
+  the `Agent` form of `predict_batch`, and its Router form does not, so
+  `laya/integrations/langchain.py::_can_batch` refuses the batched call for a `Router` with hooks
+  configured and every hook runs through `invoke` instead -- the per-input loop the MPS note below
+  is about. The answers are identical either way. `laya/router.py::Router.predict_batch` does take
+  all five hook controls, so this is the wrapper not asking it for them yet, not core having no
+  batched hooks.
 
 Remote mode (`base_url`) keeps the per-request loop, because `laya-serve` answers one decision per
 `POST`. A runner you supply yourself only needs `predict_batch` to take the fast path; without it
