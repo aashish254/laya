@@ -52,6 +52,23 @@ clamped = calib({"training": {"laya_train_calibration": {"choice": {"items": 200
         "issues": ["the fitted temperature 0.5 is on the [0.5, 3] clamp"]}}}})
 check("clamped fit stays a visible limitation -> INSUFFICIENT", clamped["types"]["choice"]["state"], evidence.INSUFFICIENT)
 
+# ---------------------------------------------- the reason text, which nothing pinned at all
+# `low`'s issue list says "not fitted", and the prefix used to say "fitted with recorded
+# limitations", so one `laya-evals evidence` line asserted the fit and denied it in the same
+# breath. The reason's job is to carry the upstream text; it adds no claim of its own.
+check("below-MIN_TYPE_N reason is the prefix plus the upstream text, verbatim",
+      low["types"]["choice"]["reason"],
+      "limitations recorded: not fitted: 5 calibration items, fewer than 10, so the "
+      "temperature stays 1.0")
+check("below-CALIB_WARN_N reason is the prefix plus the upstream text, verbatim",
+      warned["types"]["choice"]["reason"], "limitations recorded: fitted on only 30 calibration items")
+check("clamped reason is the prefix plus the upstream text, verbatim",
+      clamped["types"]["choice"]["reason"],
+      "limitations recorded: the fitted temperature 0.5 is on the [0.5, 3] clamp")
+check_true("no limitation reason states a fit the artifact did not record",
+           all(not t["reason"].startswith("fitted") for t in
+               (low["types"]["choice"], warned["types"]["choice"], clamped["types"]["choice"])))
+
 clean = calib({"training": {"laya_train_calibration": {"choice": {"items": 400, "temperature": 1.1, "issues": []}}}})
 check("clean supported fit -> PRESENT", clean["types"]["choice"]["state"], evidence.PRESENT)
 check("all-clean overall -> PRESENT", clean["state"], evidence.PRESENT)

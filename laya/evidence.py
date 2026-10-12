@@ -60,7 +60,10 @@ def inspect_calibration(config: Dict[str, Any]) -> Dict[str, Any]:
         if not isinstance(issues, list):
             types[name] = _entry(UNKNOWN, "calibration entry has no issues list; cannot tell limitations")
         elif issues:
-            types[name] = _entry(INSUFFICIENT, "fitted with recorded limitations: " + "; ".join(str(i) for i in issues),
+            # The prefix says nothing about whether a fit ran: `calibration_report` writes
+            # "not fitted: N calibration items..." into this same list, so "fitted with ..." here
+            # would contradict the limitation it is quoting a line below.
+            types[name] = _entry(INSUFFICIENT, "limitations recorded: " + "; ".join(str(i) for i in issues),
                                  {"items": items, "issues": issues})
         else:
             types[name] = _entry(PRESENT, "fitted with no recorded issues on %d items" % items,
