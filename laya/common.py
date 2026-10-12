@@ -804,6 +804,17 @@ def confidence_from_probs(p: np.ndarray, k: int) -> float:
 
     How concentrated the whole distribution is. Useful, but not calibrated: it is not what
     temperature scaling fits and not what the reported ECE measures. See `answer_confidence`.
+
+    The formula is reported only for ``k >= 2``: ``log(1)`` and ``log(0)`` are zero, so a
+    distribution over fewer than two options has no entropy scale to divide by. Those inputs
+    return ``1.0``, the *maximum* score this function can produce, whatever ``p`` holds -- an
+    empty or single-option question reads as perfectly concentrated, and a caller comparing the
+    reported `confidence` against any threshold sees a pass. That is not the same as the
+    abstention gate passing it: `laya.confidence` gates on `answer_confidence` first and reaches
+    this number only when that field is absent. The gate does pass a real one-option answer, for
+    a different reason -- a softmax over one logit is exactly ``[1.0]``, so both numbers are
+    ``1.0``. `laya.structured` builds such an answer from ``{"enum": ["solo"]}``, and the option
+    count is bounded only above (`MAX_OPTIONS`).
     """
     if k < 2:
         return 1.0
