@@ -290,12 +290,16 @@ from laya.hooks import validate_timeout  # noqa: E402
 
 check("validate_timeout/None", validate_timeout(None), None)
 check("validate_timeout/positive float", validate_timeout(1.5), 1.5)
-for bad in (0, -1, float("nan"), float("inf"), float("-inf")):
+for bad in (0, -1, float("nan"), float("inf"), float("-inf"), True, False):
     try:
         validate_timeout(bad)
         FAIL.append("validate_timeout/%r accepted; want ValueError" % (bad,))
     except ValueError:
         PASS.append("validate_timeout/%r rejected" % (bad,))
+# Only a bool is refused. `isinstance(True, int)` makes `True` an int, so the two non-bool spellings
+# that coerce to a real deadline have to keep working: `float("0.5")` and `int` -> `float`.
+check("validate_timeout/int coerces to float", type(validate_timeout(1)), float)
+check("validate_timeout/numeric string coerces to float", type(validate_timeout("0.5")), float)
 
 # --------------------------------------------------------------- class defaults
 for label, cls in (("Agent", Agent), ("Router", Router), ("ONNXAgent", ONNXAgent)):

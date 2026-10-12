@@ -1653,6 +1653,8 @@ check_raises("timeout/negative is rejected", ValueError, lambda: validate_timeou
 check_raises("timeout/NaN is rejected", ValueError, lambda: validate_timeout(float("nan")))
 check_raises("timeout/infinity is rejected", ValueError, lambda: validate_timeout(float("inf")))
 check_raises("timeout/-infinity is rejected", ValueError, lambda: validate_timeout(float("-inf")))
+check_raises("timeout/True is rejected", ValueError, lambda: validate_timeout(True))
+check_raises("timeout/False is rejected", ValueError, lambda: validate_timeout(False))
 check("timeout/positive passes through", validate_timeout(1.5), 1.5)
 check("timeout/None means no limit", validate_timeout(None), None)
 
@@ -1663,6 +1665,17 @@ check_raises("timeout/NaN per call is rejected", ValueError,
              lambda: f.predict_batch(["s0"], QUESTIONS, hooks_timeout=float("nan")))
 check_raises("timeout/infinity per call is rejected", ValueError,
              lambda: f.predict_batch(["s0"], QUESTIONS, hooks_timeout=float("inf")))
+
+# `float(True) == 1.0`, so `hooks_timeout=True` -- which reads like "yes, time the hooks" -- used to
+# install a one-second deadline on every hook call, and `False` was refused as a non-positive number,
+# the wrong reason for a wrong type. Both spellings now raise where they are set, per call and at
+# construction alike; an int and a numeric string are not bools and still bound the wait.
+check_raises("timeout/True per call is rejected", ValueError,
+             lambda: f.predict_batch(["s0"], QUESTIONS, hooks_timeout=True))
+check_raises("timeout/True at construction is rejected", ValueError,
+             lambda: Router(hooks_timeout=True))
+check("timeout/int still bounds", Router(hooks_timeout=1).hooks_timeout, 1.0)
+check("timeout/numeric string still bounds", Router(hooks_timeout="0.5").hooks_timeout, 0.5)
 
 not_running = asyncio.new_event_loop()
 try:

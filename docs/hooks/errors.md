@@ -145,11 +145,13 @@ It can be set per instance or overridden per call on every public per-call surfa
 agents: `Agent.predict_batch`, `Agent.system_one`, `Agent.predict_long`, `Router.route`,
 `Router.route_batch`, `Router.predict`, `Router.predict_batch`, `Router.predict_long`,
 `ONNXAgent.system_one`, `ONNXAgent.predict_batch` and `ONNXAgent.predict_long`. The value must be a
-positive finite number; `0`, a negative number, `inf` and `nan` each raise `ValueError` at the point
-it is set, rather than racing on a zero-length `join` -- passed straight to the underlying thread
-`join`, `nan` would raise `ValueError` and an infinite value `OverflowError`, so neither bounds the
-wait the way a limit is meant to. `None` is how to ask for no limit, not an arbitrarily large
-number.
+positive finite number; `0`, a negative number, `inf`, `nan` and a bool each raise `ValueError` at
+the point it is set, rather than racing on a zero-length `join` -- passed straight to the underlying
+thread `join`, `nan` would raise `ValueError` and an infinite value `OverflowError`, so neither
+bounds the wait the way a limit is meant to. A bool is refused for its own reason: `float(True)` is
+`1.0`, so `hooks_timeout=True` would otherwise install a one-second deadline the caller never asked
+for, and `False` would be refused as a non-positive number rather than as a wrong type. `None` is how
+to ask for no limit, not an arbitrarily large number.
 
 A timed hook runs on a worker thread in a copy of the caller's `contextvars` context, so a
 request id or tracing span set by the caller is visible to the hook.

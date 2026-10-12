@@ -250,9 +250,16 @@ def validate_timeout(value: Optional[float]) -> Optional[float]:
     started, so the outcome of a fast hook with such a value is a race.
     Non-finite values are rejected too: ``join(nan)`` raises ``ValueError`` and
     ``join(inf)`` raises ``OverflowError`` instead of waiting.
+    A bool is rejected as well: ``float(True)`` is ``1.0``, so ``hooks_timeout=True`` would
+    otherwise install a one-second deadline on every hook call that the caller never asked for.
     """
     if value is None:
         return None
+    if isinstance(value, bool):
+        # `False` would be refused below as a non-positive number, which is the wrong reason for a
+        # wrong type; `True` was accepted as 1.0. `laya/mcp/tools.py` refuses bools at the MCP
+        # boundary and names this function's gap as the reason.
+        raise ValueError("hooks_timeout must be a positive finite number or None; got %r" % (value,))
     timeout = float(value)
     if not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("hooks_timeout must be a positive finite number or None; got %r" % (value,))
