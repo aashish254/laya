@@ -8,6 +8,8 @@ TypeScript inference for Laya (`Agent.predict`, `Router`, `lang`, `email`, `pres
 python laya-ts/scripts/export_onnx.py --model-dir <ckpt> --out-dir ./model
 # writes encoder.onnx, head.onnx + copies tokenizer.json, rl_agent_config.json
 # verifies torch vs ONNX match within 1e-4 (skip with --no-verify)
+# graphs are traced to a staging dir and only moved into --out-dir once every check passes,
+# so a failed run leaves --out-dir uncreated rather than half-exported
 ```
 
 ## Node (CPU/CUDA)

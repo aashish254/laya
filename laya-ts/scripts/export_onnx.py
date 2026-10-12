@@ -163,10 +163,10 @@ def main(argv=None):
     attention_mask = torch.ones(2, seq, dtype=torch.long)
     ref_hidden, ref_logits, ref_act, marker_pos, marker_mask, qtype, ref_att = _run_ref(model, _HeadOnly(model).eval(), seq, batch=2)
 
-    # Verification loads the graphs from disk, so "before anything is written" cannot mean "before
-    # anything exists": it means nothing reaches --out-dir until every check has passed. Tracing
-    # straight into --out-dir left two unverified graphs behind on a failed run -- exactly what the
-    # Node/Web providers then load -- and created --out-dir even when the whole run refused.
+    # The module docstring promises the outputs match "within 1e-4 at both lengths before anything is
+    # written", and verification reads the graphs back off disk, so "written" has to mean "written to
+    # --out-dir". Tracing straight into it left two unverified graphs there on a failed run -- which is
+    # exactly what the Node/Web providers then load -- and created --out-dir even when the run refused.
     staged = tempfile.mkdtemp(prefix="laya-onnx-")
     try:
         enc_path = os.path.join(staged, "encoder.onnx")
