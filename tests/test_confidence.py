@@ -1,6 +1,6 @@
 """`confidence` carries two definitions, and only one of them is the calibrated quantity.
 
-    choice / score  ->  confidence_from_probs(p, k) == 1 - H(p) / log(k)
+    choice / score  ->  confidence_from_probs(p, k) == 1 - H(p) / log(k)   (k >= 2)
     noul            ->  max(p_true, 1 - p_true)     == max(p)
 
 They are not on the same scale. The same two-option distribution comes back as 0.90 from a
@@ -107,6 +107,18 @@ for probs, k in (([0.1, 0.9], 2), ([0.25] * 4, 4), ([0.7, 0.2, 0.1], 3)):
     ent = -(p * np.log(np.clip(p, 1e-12, 1.0))).sum()
     check_true("entropy/formula for k=%d" % k,
                close(confidence_from_probs(p, k), float(np.clip(1 - ent / math.log(k), 0.0, 1.0))))
+
+# The `k < 2` floor: `log(1)` and `log(0)` are zero, so the formula above has no scale there and
+# the helper hands back its maximum instead. Nothing checked that. `laya.structured` does build a
+# one-option `choice`, from `{"enum": ["solo"]}` -- only the upper bound (`MAX_OPTIONS`) is
+# enforced -- so for such a field the reported `confidence` is this constant whichever way `p`
+# points. The abstention gate is not that reader: `laya.confidence` compares
+# `answer_confidence` first and falls back to `confidence` only when that field is absent.
+check("entropy/k=1 is the maximum, not 0/0", confidence_from_probs(np.array([1.0]), 1), 1.0)
+check("entropy/k=1 ignores the value", confidence_from_probs(np.array([0.0]), 1), 1.0)
+check("entropy/k=0 is the maximum", confidence_from_probs(np.array([]), 0), 1.0)
+check_true("entropy/k=1 is at or above every threshold value the validator accepts",
+           all(confidence_from_probs(np.array([0.4]), 1) >= t for t in (0.0, 0.5, 1.0)))
 
 # --------------------------------------------------------------- min_confidence validation & abstention (#361)
 from laya.confidence import check_min_confidence, flag_low_confidence  # noqa: E402
