@@ -1655,6 +1655,26 @@ check_raises("timeout/infinity is rejected", ValueError, lambda: validate_timeou
 check_raises("timeout/-infinity is rejected", ValueError, lambda: validate_timeout(float("-inf")))
 check_raises("timeout/True is rejected", ValueError, lambda: validate_timeout(True))
 check_raises("timeout/False is rejected", ValueError, lambda: validate_timeout(False))
+
+
+# The refusal has to say *why*. `False` raises either way -- as a wrong type here, as a non-positive
+# number in the branch below -- so an arm that only checks the exception type cannot tell the two
+# apart, and a guard that simply fell through would pass it. `0` keeps the original wording.
+def _timeout_message(value):
+    try:
+        validate_timeout(value)
+    except ValueError as exc:
+        return str(exc)
+    return "<accepted>"
+
+
+check_true("timeout/a bool is refused as a bool", "not a bool" in _timeout_message(True),
+           _timeout_message(True))
+check_true("timeout/False is refused as a bool too", "not a bool" in _timeout_message(False),
+           _timeout_message(False))
+check_true("timeout/zero keeps the non-positive wording",
+           "not a bool" not in _timeout_message(0) and "positive finite" in _timeout_message(0),
+           _timeout_message(0))
 check("timeout/positive passes through", validate_timeout(1.5), 1.5)
 check("timeout/None means no limit", validate_timeout(None), None)
 

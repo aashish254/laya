@@ -150,7 +150,8 @@ the point it is set, rather than racing on a zero-length `join` -- passed straig
 thread `join`, `nan` would raise `ValueError` and an infinite value `OverflowError`, so neither
 bounds the wait the way a limit is meant to. A bool is refused for its own reason: `float(True)` is
 `1.0`, so `hooks_timeout=True` would otherwise install a one-second deadline the caller never asked
-for, and `False` would be refused as a non-positive number rather than as a wrong type. `None` is how
+for, and `False` would be refused as a non-positive number rather than as a wrong type. Its message
+says `not a bool`, which is the only way a caller can tell the two refusals apart. `None` is how
 to ask for no limit, not an arbitrarily large number.
 
 A timed hook runs on a worker thread in a copy of the caller's `contextvars` context, so a

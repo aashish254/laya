@@ -257,9 +257,11 @@ def validate_timeout(value: Optional[float]) -> Optional[float]:
         return None
     if isinstance(value, bool):
         # `False` would be refused below as a non-positive number, which is the wrong reason for a
-        # wrong type; `True` was accepted as 1.0. `laya/mcp/tools.py` refuses bools at the MCP
-        # boundary and names this function's gap as the reason.
-        raise ValueError("hooks_timeout must be a positive finite number or None; got %r" % (value,))
+        # wrong type; `True` was accepted as 1.0. The message names the type so a caller reading it
+        # learns what they passed, not just that it was too small. `laya/mcp/tools.py` refuses bools
+        # at the MCP boundary and names this function's gap as the reason.
+        raise ValueError(
+            "hooks_timeout must be a positive finite number or None, not a bool; got %r" % (value,))
     timeout = float(value)
     if not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("hooks_timeout must be a positive finite number or None; got %r" % (value,))
