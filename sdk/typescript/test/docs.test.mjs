@@ -79,7 +79,6 @@ function sentences(page) {
 const OPTION_VALUES = { model: 'english', task: 'typed', lang: 'de', langGuess: 'en',
   maxLen: 512, headMaxLen: 24, minConfidence: 0.8 };
 
-
 function controlTable(page) {
   const lines = page.split('\n');
   const start = lines.indexOf('| option | request field |');
