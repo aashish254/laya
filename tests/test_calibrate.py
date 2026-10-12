@@ -762,6 +762,19 @@ _refuses("shape/bool version", {"temperature": [1.0] * 3, "version": True},
          "version must be an integer")
 _refuses("shape/object version", {"temperature": [1.0] * 3, "version": {"v": 2}},
          "version must be an integer")
+# `version` is read with `int()`, which truncates, and the truncation is not cosmetic: `1.9`
+# became 1, which is below `CALIBRATION_VERSION`, and the arm of the load that a
+# below-`CALIBRATION_VERSION` file takes is the silent one ("version/below CALIBRATION_VERSION
+# loads into silence", below). So a version-2 file recording a *different* checkpoint used to
+# install its map without a word, instead of getting the "load/mismatch warns" treatment the same
+# contents get when the version is spelled as an integer. The string form of the same mistake
+# already refused, because `int("1.5")` raises -- `1.5` and `"1.5"` behaved oppositely.
+_refuses("shape/non-integral float version", {"temperature": [1.0] * 3, "version": 1.9},
+         "version must be an integer")
+_refuses("shape/non-integral float version above current", {"temperature": [1.0] * 3, "version": 2.5},
+         "version must be an integer")
+_refuses("shape/non-integral string version", {"temperature": [1.0] * 3, "version": "1.5"},
+         "version must be an integer")
 _refuses("shape/scalar by_options",
          {"temperature": [1.0] * 3, "temperature_by_options": 5}, "temperature_by_options")
 _refuses("shape/list by_options",
@@ -791,6 +804,33 @@ check("shape/null by_options installs an empty map", _null_key.temperature_by_op
 version_ok = type("Stub", (), {})()
 apply_calibration_payload(version_ok, {"temperature": [1.1, 1.2, 1.3], "version": "1"})
 check("shape/numeric string version still loads", version_ok.temperature, [1.1, 1.2, 1.3])
+
+# The arm a truncated version falls into. A file below `CALIBRATION_VERSION` predates the recorded
+# checkpoint, so it loads without the "load/mismatch warns" warning even when it names a different
+# model -- the back-compat contract, and exactly what `1.9` -> `1` abused. A stub with no identity
+# attributes still counts as a mismatch here (`getattr(obj, ..., None)` against the recorded
+# "another/checkpoint"), so the silence below is the skipped check, not matching identities.
+_FOREIGN_IDENTITY = {"model_id_or_path": "another/checkpoint", "subfolder": "another",
+                     "config": {"encoder": "another/encoder"}}
+_below = type("Stub", (), {})()
+with warnings.catch_warnings(record=True) as caught:
+    warnings.simplefilter("always")
+    apply_calibration_payload(_below, {
+        "temperature": [1.0] * 3, "version": CALIBRATION_VERSION - 1, **_FOREIGN_IDENTITY})
+check_true("version/below CALIBRATION_VERSION loads into silence",
+           not caught, [str(w.message) for w in caught])
+# The other half of the guard: a whole number written as a float *is* an integer, so it has to keep
+# loading and still earn the warning its foreign identity calls for. Without this arm, a fix that
+# refused every float would pass the suite.
+_integral = type("Stub", (), {})()
+with warnings.catch_warnings(record=True) as caught:
+    warnings.simplefilter("always")
+    apply_calibration_payload(_integral, {
+        "temperature": [1.1, 1.2, 1.3], "version": float(CALIBRATION_VERSION), **_FOREIGN_IDENTITY})
+check("version/integral float still loads", _integral.temperature, [1.1, 1.2, 1.3])
+check_true("version/integral float keeps the identity warning",
+           any("fitted for model_id_or_path" in str(w.message) for w in caught),
+           [str(w.message) for w in caught])
 
 
 # --------------------------------------------------------------- the load contract, from the code

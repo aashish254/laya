@@ -670,6 +670,13 @@ def apply_calibration_payload(obj, payload: Dict[str, Any]) -> None:
         version = 1
     if isinstance(version, bool) or not isinstance(version, (int, float, str)):
         raise ValueError("calibration JSON version must be an integer, got %r" % (version,))
+    if isinstance(version, float) and not version.is_integer():
+        # `int()` truncates, and the truncation is not cosmetic: a file whose `version` is 1.9
+        # became 1, which is below CALIBRATION_VERSION, so the identity check at the foot of this
+        # function never ran and a map fitted for another checkpoint loaded silently. The string
+        # form of the same mistake already raises below; a whole number written as `2.0` is an
+        # integer and still loads.
+        raise ValueError("calibration JSON version must be an integer, got %r" % (version,))
     try:
         version = int(version)
     except (TypeError, ValueError, OverflowError) as exc:   # Overflow: JSON's 1e999 is inf
