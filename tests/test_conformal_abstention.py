@@ -245,6 +245,51 @@ check("validate/the same records at floor 1 fit every bucket they touch",
       sorted(_all_buckets), ["choice:11+", "choice:2"])
 check("validate/and pass the validator unchanged", _accepts(dict(_all_buckets)), dict(_all_buckets))
 
+# The floor itself is a count, and `fit_abstention_thresholds` compared against it blindly. A string
+# read out of a config file raised `TypeError: '<' not supported between instances of 'int' and 'str'`
+# from inside the fitting loop -- after every record had been converted, and without naming the
+# argument it disliked. `True` became a floor of 1 silently, because `isinstance(True, int)` holds in
+# Python, so a caller who passed the wrong type got every bucket fitted, one-sample buckets included,
+# with no warning at all. `fit_one_temperature` has refused both shapes by name for its own `min_n`
+# all along; this is the same refusal, on the knob that decides whether a bucket is fitted at all.
+def _refuses_floor(name, value):
+    try:
+        fit_abstention_thresholds(records, [1.0, 1.0, 1.0], {}, min_bucket_n=value)
+    except ValueError as exc:
+        check_true(name, "min_bucket_n must be a positive integer, got %r" % (value,) in str(exc),
+                   str(exc))
+        return
+    except BaseException as exc:  # noqa: BLE001 -- the old TypeError from the comparison
+        FAIL.append("%s: raised %r, want ValueError" % (name, exc))
+        return
+    FAIL.append("%s: accepted min_bucket_n=%r" % (name, value))
+
+
+_refuses_floor("floor/a string floor is refused by name", "100")
+_refuses_floor("floor/True is refused rather than read as a floor of 1", True)
+_refuses_floor("floor/0 is refused", 0)
+_refuses_floor("floor/1.5 is refused rather than compared as a float", 1.5)
+
+# A bad floor refuses before the records are read, so the two errors cannot compete: the record below
+# is deliberately broken, and a guard placed after `_iter_records` would raise its error instead.
+try:
+    fit_abstention_thresholds([(0, [1.0, 0.0], [1.0, 0.0], 7)], [1.0, 1.0, 1.0], {}, min_bucket_n=True)
+except ValueError as exc:
+    check_true("floor/a bad floor fails before the records are read",
+               "min_bucket_n" in str(exc) and "k must be" not in str(exc), str(exc))
+else:
+    FAIL.append("floor/a bad floor fails before the records are read: no ValueError")
+
+# A count that is an `Integral` but not a Python `int` still fits: `laya.train` reaches this floor as a
+# validated plain int, but a caller deriving the floor from its own data (`len(rows) // 4`, a numpy
+# value off a dataframe) holds a legitimate count, and refusing it for its type would be a stricter
+# rule than the `min_n` two functions up has ever applied. (`numpy.int64` bound under its own name,
+# because this suite's `import numpy as np` belongs to the section further down.)
+from numpy import int64 as _int64  # noqa: E402
+check("floor/a numpy int64 floor fits, not refused for its type",
+      sorted(fit_abstention_thresholds(records, [1.0, 1.0, 1.0], {}, min_bucket_n=_int64(MIN_ABSTAIN_BUCKET_N))),
+      sorted(fit_abstention_thresholds(records, [1.0, 1.0, 1.0], {}, min_bucket_n=MIN_ABSTAIN_BUCKET_N)))
+
 BOGUS = {
     "choice:2-5": "an invented band",
     "choice:12": "an option count, not a band",

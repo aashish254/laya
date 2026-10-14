@@ -1174,6 +1174,77 @@ except ValueError:
     check_true("binning/bins must be >= 1", True)
 
 
+# ---------------------------------------------------------------- the counts a map is fitted from
+# `fit_binning_map` checked only `bins >= 1`, and nothing at all about `min_bucket_n`, before it
+# touched `records`. `True` satisfies that check (`isinstance(True, int)` holds) and fits a one-bin
+# map whose single value rewrites every confidence of its bucket -- and the map carries that
+# `bins: True` into `Agent.save_calibration`, which `apply_calibration_payload` refuses to read back
+# (the shape block above pins the refusal). So this module could fit a checkpoint this module could
+# not load. A float got further and failed worse: `range(bins)` raised
+# `TypeError: 'float' object cannot be interpreted as an integer` only after every record had been
+# converted, naming neither the argument nor the function. A `numpy.int64` really is a count and must
+# keep fitting, but it is not JSON-serialisable, so `json.dump` -- which `save_calibration` calls
+# with no `default=` -- aborted the whole save over a value the fit never used. Hence `int(bins)` in
+# the map, and refusals in the words `fit_one_temperature` already uses for its own `min_n`.
+def _refuses_count(name, fragment, value, **kwargs):
+    try:
+        fit_binning_map(mixed, fitted["temperature"], fitted["temperature_by_options"], **kwargs)
+    except ValueError as exc:
+        # The refused value has to be in the message: a count that arrives from a config file or a
+        # numpy computation is reported by the caller, not by this module's defaults.
+        check_true(name, fragment in str(exc) and "got %r" % (value,) in str(exc), str(exc))
+        return
+    except BaseException as exc:  # noqa: BLE001 -- the old TypeError from range() / the comparison
+        FAIL.append("%s: raised %r, want ValueError" % (name, exc))
+        return
+    FAIL.append("%s: accepted %r" % (name, kwargs))
+
+
+_BINS_W = "bins must be an integer of at least 1"
+_FLOOR_W = "min_bucket_n must be a positive integer"
+_refuses_count("counts/bins=0 is refused by name", _BINS_W, 0, bins=0)
+_refuses_count("counts/bins=True is refused rather than fitted as one bin", _BINS_W, True, bins=True)
+_refuses_count("counts/bins=1.5 is refused rather than crashing in range()", _BINS_W, 1.5, bins=1.5)
+_refuses_count("counts/bins='10' is refused rather than crashing on the compare", _BINS_W, "10", bins="10")
+_refuses_count("counts/min_bucket_n=True is refused", _FLOOR_W, True, min_bucket_n=True)
+_refuses_count("counts/min_bucket_n=0 is refused", _FLOOR_W, 0, min_bucket_n=0)
+_refuses_count("counts/min_bucket_n='200' is refused", _FLOOR_W, "200", min_bucket_n="200")
+_refuses_count("counts/bins is read before min_bucket_n", _BINS_W, 0, bins=0, min_bucket_n=0)
+
+# ... and it refuses before spending a pass on the records: the row below is deliberately broken, so
+# a guard that ran after `_iter_records` would raise that row's error instead and leave the knob
+# unnamed.
+_broken_row = [(QTYPES["choice"], np.array([1.0, 0.0]), np.array([1.0, 0.0]), 7)]
+try:
+    fit_binning_map(_broken_row, [1.0] * 3, {}, bins=True)
+except ValueError as exc:
+    check_true("counts/a bad bins fails before the records are read",
+               "bins" in str(exc) and "k must be" not in str(exc), str(exc))
+
+# An `Integral` that is not a Python `int` still fits, and fits the same map.
+_np_map = fit_binning_map(mixed, fitted["temperature"], fitted["temperature_by_options"], bins=np.int64(10))
+_int_map = fit_binning_map(mixed, fitted["temperature"], fitted["temperature_by_options"], bins=10)
+check_true("counts/numpy int64 bins fits the same map as int", _np_map == _int_map,
+           "%s vs %s" % (_np_map, _int_map))
+_np_floor = fit_binning_map(mixed, fitted["temperature"], fitted["temperature_by_options"],
+                           bins=10, min_bucket_n=np.int64(MIN_BINNING_BUCKET_N))
+check_true("counts/a numpy int64 floor fits too, rather than being refused as not-an-int",
+           _np_floor == _int_map, sorted(_np_floor))
+check_true("counts/and stores bins as a plain int, which JSON writes",
+           type(_np_map["choice:2"]["bins"]) is int, type(_np_map["choice:2"]["bins"]).__name__)
+_np_body = calibration_payload(fitted["temperature"], fitted["temperature_by_options"],
+                               binning_map=_np_map)
+try:
+    _np_json = json.dumps(_np_body)
+except BaseException as exc:  # noqa: BLE001
+    FAIL.append("counts/the numpy-bins map saves as JSON: raised %r" % (exc,))
+else:
+    PASS.append("counts/the numpy-bins map saves as JSON")
+    apply_calibration_payload(stub, json.loads(_np_json))
+    check("counts/and loads back with the bins it was fitted for",
+          stub.binning_map["choice:2"]["bins"], 10)
+
+
 print("\n%d passed, %d failed" % (len(PASS), len(FAIL)))
 for f in FAIL:
     print("  FAIL " + f)

@@ -383,8 +383,8 @@ def fit_abstention_thresholds(records: Iterable, temperature: Sequence[float],
     (`records_from_labeled` builds them). Confidence is the **calibrated** `max(p)` -- the logits are
     scaled by the fitted `temperature` / `temperature_by_options` first, so thresholds and the
     numbers the runtime reports are on the same scale. `target_error` is the tolerated error among
-    accepted answers; `min_bucket_n` omits buckets too small to fit, and `conservative` adds a
-    one-sample margin. An omitted bucket is not caught by a fallback: the map lookup falls to its own
+    accepted answers; `min_bucket_n` is a count and must be an integer of at least 1; `conservative`
+    adds a one-sample margin. An omitted bucket is not caught by a fallback: the map lookup falls to its own
     ``"default"`` entry and then to 0.0, which gates nothing, so a `min_bucket_n` that excludes a
     bucket leaves that bucket ungated unless the map names a ``"default"``. The thresholds are
     empirical cuts on the calibration set, not a formal coverage guarantee -- validate on held-out
@@ -401,6 +401,8 @@ def fit_abstention_thresholds(records: Iterable, temperature: Sequence[float],
     """
     if not 0.0 <= target_error <= 1.0:
         raise ValueError("target_error must be in [0.0, 1.0], got %r" % (target_error,))
+    if isinstance(min_bucket_n, bool) or not isinstance(min_bucket_n, Integral) or min_bucket_n < 1:
+        raise ValueError("min_bucket_n must be a positive integer, got %r" % (min_bucket_n,))
     recs = _iter_records(records)
     by_bucket: Dict[str, List[Tuple[float, int]]] = {}
     for qt, z, t, k in recs:
@@ -454,9 +456,19 @@ def fit_binning_map(records: Iterable, temperature: Sequence[float],
     bin width. What the centre buys is that an unseen confidence is never recalibrated to a
     fabricated 0, not that it passes through -- only a bucket the map has no entry for does that
     (:func:`apply_binning_map`).
+
+    `bins` and `min_bucket_n` are counts, so each must be an integer of at least 1. `True` is one,
+    because `isinstance(True, int)` holds in Python, and the map fitted for `bins=True` has one bin
+    whose single value rewrites every confidence of its bucket; `Agent.save_calibration` copies that
+    `bins` verbatim, and :func:`apply_calibration_payload` refuses to read the file back. Refusing
+    the count where it is set keeps a checkpoint this module fitted from becoming one this module
+    cannot load. Any other `Integral` is accepted -- a `numpy.int64` counts -- and the map stores
+    `bins` as a Python `int`, because `json.dump` serializes neither.
     """
-    if bins < 1:
-        raise ValueError("bins must be >= 1, got %r" % (bins,))
+    if isinstance(bins, bool) or not isinstance(bins, Integral) or bins < 1:
+        raise ValueError("bins must be an integer of at least 1, got %r" % (bins,))
+    if isinstance(min_bucket_n, bool) or not isinstance(min_bucket_n, Integral) or min_bucket_n < 1:
+        raise ValueError("min_bucket_n must be a positive integer, got %r" % (min_bucket_n,))
     recs = _iter_records(records)
     by_bucket: Dict[str, List[Tuple[float, int]]] = {}
     for qt, z, t, k in recs:
@@ -476,7 +488,10 @@ def fit_binning_map(records: Iterable, temperature: Sequence[float],
         for b in range(bins):
             mask = idx == b
             values.append(float(corr[mask].mean()) if mask.any() else (b + 0.5) / bins)
-        out[key] = {"bins": bins, "values": values}
+        # `int()` because the map is written to JSON by `Agent.save_calibration`, which passes no
+        # `default=`: a caller's `numpy.int64` is an `Integral` and fits here, but `json.dump` refuses
+        # it, so the whole calibration file fails to save over a value the fit itself never used.
+        out[key] = {"bins": int(bins), "values": values}
     return out
 
 
