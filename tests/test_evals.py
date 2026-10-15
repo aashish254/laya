@@ -2219,9 +2219,11 @@ def test_file_fingerprint_refuses_a_number_because_python_reads_it_as_a_descript
     Then the caller's own handle still reported `closed=False` while every read through it raised
     `OSError: [Errno 9] Bad file descriptor`, because the `with` had closed the descriptor under it.
     `bool` is an `int`, so `True` names descriptor 1 (stdout) and `False` names stdin; Python itself
-    warns about that ("bool is used as a file descriptor"). A `list` was worse only in being louder:
-    a bare `TypeError` escaped past the `except OSError`, which is the exit-code-1 traceback
-    `laya-evals` reserves for a run that really regressed.
+    warns about that ("bool is used as a file descriptor"). A `list` was different only in being
+    louder: `open()` raises a bare `TypeError` for it, which escaped past the `except OSError` inside
+    this helper, and so past the `EvalError` the docstring promises -- the type `laya-evals` prints
+    and returns 2 for (`laya/evals_cli.py:605-611`), where an uncaught traceback is the exit 1 that
+    is meant to say a run really regressed.
     """
     import hashlib
     import pathlib
