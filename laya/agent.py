@@ -300,16 +300,8 @@ def _cuda_amp_dtype(checkpoint_default: Optional[str]) -> torch.dtype:
     shipped checkpoints), or LAYA_CUDA_AMP=fp16|float16|bf16|bfloat16 when set. fp16 stays 2-10x
     closer to the fp32 forward than bf16 on every shipped checkpoint at the same speed; anything
     else is ignored. The long spellings count because they are what `agent.dtype` reports back, so
-    the precision a user reads off one response is one they can ask for on the next.
-
-    The value is read stripped, because padding is not another spelling: `LAYA_CUDA_AMP=" fp16"` is
-    what a Compose `environment:` entry with a quoted value or a CRLF-authored env file writes, and
-    without the strip it silently keeps the bf16 the operator just overrode. Blank or all whitespace
-    is unset, which is what the checkpoint default already means. `laya.serve._env_bool` strips for
-    the same reason, and `_mps_amp_min_rows` below needs no strip only because `int()` ignores
-    padding.
-    """
-    raw = os.environ.get("LAYA_CUDA_AMP", "").strip().lower()
+    the precision a user reads off one response is one they can ask for on the next."""
+    raw = os.environ.get("LAYA_CUDA_AMP", "").lower()
     if raw in ("fp16", "float16"):
         return torch.float16
     if raw in ("bf16", "bfloat16"):
@@ -321,9 +313,12 @@ def _cpu_amp_dtype() -> Optional[torch.dtype]:
     """Autocast dtype on CPU: bf16 when LAYA_CPU_AMP=bf16|bfloat16, None to leave the forward in
     fp32. No fp16 spelling is offered here, because CPU autocast has no fp16 fast path that beats
     fp32 -- bf16 is the only reduced precision worth asking for, and only on hardware with native
-    BF16 instructions, which is why it stays opt-in. Anything else is ignored. Stripped and blank
-    read as unset exactly as in :func:`_cuda_amp_dtype`: the two knobs are set on the same line of
-    the same env file."""
+    BF16 instructions, which is why it stays opt-in. Anything else is ignored. The value is read
+    stripped, and blank or all whitespace is unset, because padding is not another spelling: every
+    compose file passes this one through verbatim (`compose.yaml:15`), so a quoted or CRLF-authored
+    `.env` line arrives with its whitespace intact, and the rest of the `LAYA_*` family already reads
+    it that way -- `serve._env_bool` treats blank as unset, `mcp.device.env_device` strips, and
+    `_mps_amp_min_rows` above needs no strip only because `int()` ignores padding."""
     if os.environ.get("LAYA_CPU_AMP", "").strip().lower() in ("bf16", "bfloat16"):
         return torch.bfloat16
     return None

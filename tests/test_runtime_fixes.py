@@ -302,28 +302,17 @@ os.environ["LAYA_CPU_AMP"] = "int8"
 check("cpu-amp/env invalid leaves the forward fp32", _cpu_amp_dtype(), None)
 del os.environ["LAYA_CPU_AMP"]
 
-# Padding is not another spelling. Both knobs were read with a `.lower()` and no `.strip()`, so a
-# value that carries whitespace falls through every arm of the comparison and returns the precision
-# the operator just overrode -- silently, on the path that decides the numerics of every answer.
-# `docs/docker.md` and the README's threshold section measure what the two differ by (bf16 moves a
-# probability by up to 0.073 against fp32 and flips 3 of 864 argmaxes where fp16 stays within 0.019
-# and flips none), and `compose.cuda.yaml` passes the host value through verbatim, so a padded or
-# CRLF-authored `.env` line reaches the container exactly as written. Case is covered above
-# (`BF16`, `BFloat16`); `_mps_amp_min_rows` needs no strip only because `int()` ignores padding, so
-# within this module the two dtype knobs were the ones that disagreed with their neighbours.
-os.environ.pop("LAYA_CUDA_AMP", None)
-for _padded in (" fp16 ", " fp16", "fp16 ", "fp16\n", "fp16\r"):
-    os.environ["LAYA_CUDA_AMP"] = _padded
-    check("cuda-amp/padded %r is the same ask as fp16" % _padded, _cuda_amp_dtype("bf16"), torch.float16)
-os.environ["LAYA_CUDA_AMP"] = " BF16 "
-check("cuda-amp/padded uppercase bf16 overrides an fp16 checkpoint", _cuda_amp_dtype("fp16"), torch.bfloat16)
-for _blank in ("", " ", "\t", "\n", "\r\n"):
-    os.environ["LAYA_CUDA_AMP"] = _blank
-    check("cuda-amp/blank %r reads as unset" % _blank, _cuda_amp_dtype("bf16"), torch.bfloat16)
-os.environ["LAYA_CUDA_AMP"] = " fp16x "
-check("cuda-amp/padded junk is still ignored", _cuda_amp_dtype("bf16"), torch.bfloat16)
-del os.environ["LAYA_CUDA_AMP"]
-
+# Padding is not another spelling. `LAYA_CPU_AMP` was read with a `.lower()` and no `.strip()`, so a
+# value that carries whitespace fell through every arm of the comparison and left the forward in
+# fp32 -- silently, on the path that decides the numerics of every answer. All four compose files
+# pass this variable through verbatim (`compose.yaml:15`, `compose.cuda.yaml:18`,
+# `compose.http.yaml:45`, `compose.spark.yaml:19`), so a quoted value or a CRLF-authored `.env` line
+# reaches the container with its padding, and `docs/docker.md:72` documents the ask as `bf16` or
+# `bfloat16`. Case is covered above (`BF16`, `BFloat16`). The rest of the `LAYA_*` family already
+# reads its value stripped or whitespace-tolerant -- `serve._env_bool` takes blank as unset,
+# `serve._resolve_port` calls `str(raw).strip()`, `mcp.device.env_device` turns `' CUDA:0 '` into
+# `cuda:0`, and `_mps_amp_min_rows` needs no strip only because `int()` ignores padding -- which is
+# what makes this one knob the odd variant rather than a new convention being imposed.
 os.environ.pop("LAYA_CPU_AMP", None)
 for _padded in (" bf16 ", " bf16", "bf16 ", "bf16\n", "bf16\r"):
     os.environ["LAYA_CPU_AMP"] = _padded
