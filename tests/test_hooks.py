@@ -1767,6 +1767,29 @@ check_raises("timeout/negative is rejected", ValueError, lambda: validate_timeou
 check_raises("timeout/NaN is rejected", ValueError, lambda: validate_timeout(float("nan")))
 check_raises("timeout/infinity is rejected", ValueError, lambda: validate_timeout(float("inf")))
 check_raises("timeout/-infinity is rejected", ValueError, lambda: validate_timeout(float("-inf")))
+check_raises("timeout/True is rejected", ValueError, lambda: validate_timeout(True))
+check_raises("timeout/False is rejected", ValueError, lambda: validate_timeout(False))
+
+# The refusal has to say WHICH test it failed. `False` raises on the numeric arm below too, so a
+# check on the exception type alone cannot tell the two apart -- a guard that merely fell through
+# would pass them. `0` keeps the non-positive wording.
+def _timeout_message(value):
+    try:
+        validate_timeout(value)
+    except ValueError as exc:
+        return str(exc)
+    return "<accepted>"
+
+
+check_true("timeout/a bool is refused as a bool", "not a bool" in _timeout_message(True),
+           _timeout_message(True))
+check_true("timeout/False is refused as a bool too", "not a bool" in _timeout_message(False),
+           _timeout_message(False))
+check_true("timeout/the bool refusal names the value it refused",
+           "got True" in _timeout_message(True), _timeout_message(True))
+check_true("timeout/zero keeps the non-positive wording",
+           "not a bool" not in _timeout_message(0) and "positive finite" in _timeout_message(0),
+           _timeout_message(0))
 check("timeout/positive passes through", validate_timeout(1.5), 1.5)
 check("timeout/None means no limit", validate_timeout(None), None)
 
@@ -1777,6 +1800,29 @@ check_raises("timeout/NaN per call is rejected", ValueError,
              lambda: f.predict_batch(["s0"], QUESTIONS, hooks_timeout=float("nan")))
 check_raises("timeout/infinity per call is rejected", ValueError,
              lambda: f.predict_batch(["s0"], QUESTIONS, hooks_timeout=float("inf")))
+check_raises("timeout/True per call is rejected", ValueError,
+             lambda: f.predict_batch(["s0"], QUESTIONS, hooks_timeout=True))
+
+# The constructor is the route a deployment hits: a config file's `hooks_timeout: yes` loads as
+# True, and Router refuses it there rather than at the first hook call.
+check_raises("timeout/True on the Router constructor is rejected", ValueError,
+             lambda: Router(hooks_timeout=True))
+
+# An instance attribute set after construction is not read by the call entry -- `dispatch` passes
+# it to `_call_hook`, which validates it -- so it refuses at the hook, and under `hooks_raise=False`
+# it warns like any other hook failure instead of silently running a one-second deadline.
+f = make_fake()
+f.hooks_timeout = True
+check_raises("timeout/True on the instance is refused at the hook", ValueError,
+             lambda: f.predict_batch(["s0"], QUESTIONS, on_predict_start=lambda ctx: None))
+f = make_fake()
+f.hooks_timeout = True
+with warnings.catch_warnings(record=True) as caught:
+    warnings.simplefilter("always")
+    res = f.predict_batch(["s0"], QUESTIONS, on_predict_start=lambda ctx: None, hooks_raise=False)
+check("timeout/True on the instance continues under hooks_raise=False", len(res), 1)
+check_true("timeout/True on the instance is warned under hooks_raise=False",
+           any("not a bool" in str(w.message) for w in caught), repr(caught))
 
 not_running = asyncio.new_event_loop()
 try:

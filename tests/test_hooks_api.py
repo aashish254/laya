@@ -307,7 +307,9 @@ from laya.hooks import validate_timeout  # noqa: E402
 
 check("validate_timeout/None", validate_timeout(None), None)
 check("validate_timeout/positive float", validate_timeout(1.5), 1.5)
-for bad in (0, -1, float("nan"), float("inf"), float("-inf")):
+# `True` and `False` are here because `float()` accepts them: `True` used to arrive as a
+# one-second deadline, so the contract refuses a bool as a bool rather than as a number.
+for bad in (0, -1, True, False, float("nan"), float("inf"), float("-inf")):
     try:
         validate_timeout(bad)
         FAIL.append("validate_timeout/%r accepted; want ValueError" % (bad,))

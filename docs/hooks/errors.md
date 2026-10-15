@@ -165,8 +165,11 @@ agents: `Agent.predict_batch`, `Agent.system_one`, `Agent.predict_long`, `Router
 positive finite number; `0`, a negative number, `inf` and `nan` each raise `ValueError` at the point
 it is set, rather than racing on a zero-length `join` -- passed straight to the underlying thread
 `join`, `nan` would raise `ValueError` and an infinite value `OverflowError`, so neither bounds the
-wait the way a limit is meant to. `None` is how to ask for no limit, not an arbitrarily large
-number.
+wait the way a limit is meant to. A `bool` raises too, with `not a bool` in its message:
+`float(True)` is `1.0`, so `hooks_timeout=True` -- a config file's `hooks_timeout: yes` reads that
+way -- would otherwise install a one-second deadline on every hook call, while `False` would be
+refused as a non-positive number rather than as a wrong type. `None` is how to ask for no limit, not
+an arbitrarily large number.
 
 A timed hook runs on a worker thread in a copy of the caller's `contextvars` context, so a
 request id or tracing span set by the caller is visible to the hook.
