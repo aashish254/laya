@@ -2211,10 +2211,11 @@ def test_file_fingerprint_refuses_a_number_because_python_reads_it_as_a_descript
 
     `file_fingerprint`'s docstring promises `EvalError` "when the file cannot be read, so a report
     never carries a hash of something other than the bytes that were parsed". An `int` argument made
-    both halves of that promise false at once. Measured on `4ac226d5`, with descriptor 3 open on a
-    file of 47 bytes and the dataset asked for being a different file: `file_fingerprint(3)` returned
-    `39368215816227e2…`, which is that other file's sha256, and raised nothing -- so the wrong
-    identity lands in `config["dataset_sha256"]`, one of `_IDENTITY_KEYS` that `comparable_to` reads.
+    both halves of that promise false at once. Measured on `4ac226d5`, with descriptor 3 open on the
+    52-byte file written below and the dataset asked for being a different file: `file_fingerprint(3)`
+    returned `39368215816227e2…`, which is that other file's sha256, and raised nothing -- so the
+    wrong identity lands in `config["dataset_sha256"]`, one of `_IDENTITY_KEYS` that `comparable_to`
+    reads.
     Then the caller's own handle still reported `closed=False` while every read through it raised
     `OSError: [Errno 9] Bad file descriptor`, because the `with` had closed the descriptor under it.
     `bool` is an `int`, so `True` names descriptor 1 (stdout) and `False` names stdin; Python itself
