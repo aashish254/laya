@@ -2206,6 +2206,89 @@ def test_cli_rejects_a_malformed_tolerance():
         evals_cli._parse_pairs(["choice_accuracy"])
 
 
+def test_file_fingerprint_refuses_a_number_because_python_reads_it_as_a_descriptor(tmp_path):
+    """`open()` takes a path *or* a file descriptor, and only one of them is what this names.
+
+    `file_fingerprint`'s docstring promises `EvalError` "when the file cannot be read, so a report
+    never carries a hash of something other than the bytes that were parsed". An `int` argument made
+    both halves of that promise false at once. Measured on `4ac226d5`, with descriptor 3 open on a
+    file of 47 bytes and the dataset asked for being a different file: `file_fingerprint(3)` returned
+    `39368215816227e2…`, which is that other file's sha256, and raised nothing -- so the wrong
+    identity lands in `config["dataset_sha256"]`, one of `_IDENTITY_KEYS` that `comparable_to` reads.
+    Then the caller's own handle still reported `closed=False` while every read through it raised
+    `OSError: [Errno 9] Bad file descriptor`, because the `with` had closed the descriptor under it.
+    `bool` is an `int`, so `True` names descriptor 1 (stdout) and `False` names stdin; Python itself
+    warns about that ("bool is used as a file descriptor"). A `list` was worse only in being louder:
+    a bare `TypeError` escaped past the `except OSError`, which is the exit-code-1 traceback
+    `laya-evals` reserves for a run that really regressed.
+    """
+    import hashlib
+    import pathlib
+
+    asked = tmp_path / "asked.jsonl"
+    asked.write_text('{"state": "the intended dataset"}\n', encoding="utf-8")
+    other = tmp_path / "other.jsonl"
+    other.write_text('{"state": "an unrelated file that happens to be open"}\n', encoding="utf-8")
+
+    assert evals.file_fingerprint(str(asked)) == \
+        hashlib.sha256(asked.read_bytes()).hexdigest(), "the path itself still fingerprints"
+
+    handle = open(str(other), "rb")
+    descriptor = handle.fileno()
+    with pytest.raises(EvalError) as exc:
+        evals.file_fingerprint(descriptor)
+    assert "descriptor" in str(exc.value), str(exc.value)
+    assert str(descriptor) in str(exc.value), "the message has to name what was refused"
+    assert not handle.closed, "the refusal must not close the caller's descriptor"
+    assert handle.read(1), "the caller's handle still works after the refusal"
+    handle.close()
+
+    for value, label in ((True, "bool"), (False, "bool")):
+        with pytest.raises(EvalError) as exc:
+            evals.file_fingerprint(value)
+        assert "descriptor" in str(exc.value), "%s -> %s" % (label, exc.value)
+
+    for value in ([], {}, (1,), {"path": "x"}, 3.5, None, object()):
+        with pytest.raises(EvalError) as exc:
+            evals.file_fingerprint(value)
+        assert "expected a path" in str(exc.value), "%r -> %s" % (value, exc.value)
+
+    # The three shapes that are legitimately paths keep working, bytes included: a missing file is
+    # still the `EvalError` the docstring promises, not a refusal for its type.
+    assert evals.file_fingerprint(other) == evals.file_fingerprint(str(other))
+    assert evals.file_fingerprint(pathlib.Path(str(other))) == evals.file_fingerprint(str(other))
+    assert isinstance(evals.file_fingerprint(str(other).encode()), str)
+    missing = str(tmp_path / "gone.jsonl")
+    with pytest.raises(EvalError) as exc:
+        evals.file_fingerprint(missing.encode("utf-8"))
+    assert "cannot be read" in str(exc.value), exc.value
+
+    # Reachability: this is not only the helper's own API. The two attribution entry points take
+    # `dataset_path` and hash it before scoring anything, so a descriptor passed there would have
+    # been recorded as the dataset the run was scored on. Their own validation runs first, so the
+    # stub agent below is never reached.
+    from laya.evals_shortlist import evaluate_shortlist
+    from laya.evals_tournament import evaluate_tournament
+
+    class _Unreached:
+        def predict(self, state, questions, model=None):
+            raise AssertionError("dataset_path is hashed before the runner is called")
+
+    def _embed(texts):
+        return [[0.0] for _ in texts]
+
+    dataset = Dataset([Example("s", {"intent": {"type": "choice", "instructions": "?",
+                                                "criteria": {"a": "x", "b": "y"}}},
+                               {"intent": "a"})])
+    with pytest.raises(EvalError) as exc:
+        evaluate_shortlist(_Unreached(), dataset, k=1, embed_fn=_embed, checkpoint_id="rev",
+                           embedder_id="emb", dataset_path=descriptor)
+    assert "descriptor" in str(exc.value), exc.value
+    with pytest.raises(EvalError) as exc:
+        evaluate_tournament(_Unreached(), dataset, checkpoint_id="rev", dataset_path=[])
+    assert "expected a path" in str(exc.value), exc.value
+
+
 def test_cli_run_records_the_run_identity(monkeypatch, tmp_path):
     """The `--json` artifact is what a reviewer reads, so it has to say which run produced it.
 

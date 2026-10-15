@@ -24,6 +24,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import os
 import statistics
 import time
 from dataclasses import dataclass, field
@@ -284,7 +285,20 @@ def file_fingerprint(path: str) -> str:
     `config.dataset` is the path as typed, and two datasets share a path across a rebase, a CI
     cache or a colleague's checkout. Raises `EvalError` when the file cannot be read, so a report
     never carries a hash of something other than the bytes that were parsed.
+
+    That promise needs a type check before the `open`, because `open()` takes two kinds of argument
+    and only one of them is a path: an `int` is a file descriptor. A caller that handed over one
+    would get the digest of whatever its process already had open at that number -- recorded as the
+    dataset the run was scored on -- and the `with` would close that descriptor on the way out.
+    Anything that is neither `str`, `bytes` nor `os.PathLike` used to escape as a bare `TypeError`.
     """
+    if isinstance(path, int):
+        # `bool` is an `int` too, so `True` would name descriptor 1.
+        raise EvalError("%s cannot be read for a fingerprint: an integer is an open file "
+                        "descriptor, not a path" % (path,))
+    if not isinstance(path, (str, bytes, os.PathLike)):
+        raise EvalError("%s cannot be read for a fingerprint: expected a path, got %s"
+                        % (path, type(path).__name__))
     digest = hashlib.sha256()
     try:
         with open(path, "rb") as handle:
