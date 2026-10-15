@@ -206,6 +206,30 @@ for _key in sorted(confidence_module.bucket_keys()):
         unreachable.append(_key)
 check("vocabulary/every accepted bucket is reachable by some answer", unreachable, [])
 
+# The comment at `laya/confidence.py:170-174` says this suite compares what `_option_bucket` returns
+# to `common.temp_bucket` "for every option count, so the two bands cannot drift apart unnoticed".
+# It did not: the mirror above compares `bucket_keys()` to `temp_bucket`, and the drive right above
+# this samples one option count per band (`BAND_K`: 2, 4, 8, 12). The band expression exists twice
+# -- `laya/common.py:839` and `laya/confidence.py:186` -- and the two copies were only ever compared
+# at four points, so a boundary could move unnoticed. Measured on `main`: editing
+# `confidence.py`'s `k <= 5` to `k < 5` (a 5-option answer then reads `6-10`) or its `k <= 10` to
+# `k < 10` leaves this suite at `76 passed, 0 failed` and `tests/test_confidence.py` at
+# `240 passed, 0 failed`; the same edit at `k <= 2` is caught, because `BAND_K["2"] == 2`.
+#
+# The band *names* are the oracle, not the other copy of the expression: "3-5" claims 3, 4 and 5, so
+# the endpoints are checkable on their own terms. `noul` is excluded on purpose -- an answer of that
+# type carries no `probabilities` (`laya/agent.py:1392-1399`), so its option count comes from the
+# `elif qt == "noul": k = 2` branch and the drive above already reaches it.
+for _qt in ("choice", "score"):
+    check("vocabulary/%s matches common.temp_bucket at every option count" % _qt,
+          [_k for _k in range(2, 40)
+           if confidence_module._option_bucket(ans(_qt, _k, 0.5)) != temp_bucket(QTYPES[_qt], _k)],
+          [])
+check("vocabulary/the bands include both endpoints",
+      {_k: confidence_module._option_bucket(ans("choice", _k, 0.5)).partition(":")[2]
+       for _k in (2, 3, 4, 5, 6, 9, 10, 11, 12)},
+      {2: "2", 3: "3-5", 4: "3-5", 5: "3-5", 6: "6-10", 9: "6-10", 10: "6-10", 11: "11+", 12: "11+"})
+
 
 def _accepts(m):
     """The validated map, or the refusal's text -- so a widened or narrowed vocabulary reports which
