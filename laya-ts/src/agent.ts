@@ -21,8 +21,11 @@ import {
 } from "./common.js";
 import type { BinningMap, InternalQ, MinConfidence, OptionStats, SequenceStats } from "./common.js";
 import type { Batch, SessionProvider } from "./providers.js";
+import type { OptionStabilityReport } from "./option-stability.js";
+import { predictLong, recordLongResults, finishLongResults, isLongCall, type LongPredictOptions, type LongResult } from "./predict-long.js";
+export type { LongPredictOptions, LongResult, LongUsage, LongAnswer, LongWindow } from "./predict-long.js";
 import { encodeWithData, parseTokenizerJson, type TokenizerLike } from "./tokenizer.js";
-import { decide, type DecideOptions, type DecisionResult } from "./structured.js";
+import { decide, decideBatch, type DecideOptions, type DecideBatchOptions, type DecisionResult } from "./structured.js";
 import {
   HookRegistry,
   PredictContext,
@@ -31,6 +34,7 @@ import {
   defaultsAlreadyRan,
   dispatchAsync,
   normaliseHooks,
+  validateHooksTimeout,
   type HookArg,
   type PredictHook,
 } from "./hooks.js";
@@ -56,6 +60,7 @@ export interface ChoiceAnswer {
   answer_confidence: number;
   action: ActionInfo;
   low_confidence?: boolean;
+  reliability?: OptionStabilityReport;
 }
 
 export interface ScoreAnswer {
@@ -154,7 +159,12 @@ export interface PredictOptions {
   onPredictStart?: PredictHook;
   onPredictEnd?: PredictHook;
   hooksRaise?: boolean;
-  /** Timeout for each hook call in seconds (null = no limit). */
+  /**
+   * Timeout for each hook call in seconds (null = no limit). Applies on the paths that wait for
+   * their hooks -- `Agent.systemOne`/`predict` and `Router.load`/`Router.predict`. `Router`'s batch
+   * and routing paths dispatch hooks without waiting for a promise, so a limit there is not a
+   * deadline the request can miss.
+   */
   hooksTimeout?: number | null;
   /** Per-call token-budget overrides; null = agent config. A start hook may also set them. */
   maxLen?: number | null;
@@ -417,6 +427,7 @@ function tokenizerFromHF(tokenizerJson: unknown): TokenizerLike | null {
     padId: data.ids.pad,
     maskToken: data.maskToken,
     encode: (text: string) => encodeWithData(data, text),
+    ...(data.decode ? { decode: data.decode } : {}),
   };
 }
 
@@ -449,7 +460,7 @@ export class Agent extends HookRegistry {
     // Hooks are opt-in; an unset hook list is a no-op. See hooks.ts.
     this.hooks = normaliseHooks(opts.hooks, opts.onPredictStart, opts.onPredictEnd);
     this.hooksRaise = opts.hooksRaise ?? true;
-    this.hooksTimeout = opts.hooksTimeout ?? null;
+    this.hooksTimeout = validateHooksTimeout(opts.hooksTimeout ?? null);
     const cfg = { ...(opts.cfg ?? {}) } as AgentCfg;
     if (opts.max_len !== undefined) cfg.max_len = opts.max_len;
     if (opts.head_max_len !== undefined) cfg.head_max_len = opts.head_max_len;
@@ -486,7 +497,10 @@ export class Agent extends HookRegistry {
     ];
     const rejected: string[] = [];
     for (const [name, rawV, applied] of entries) {
-      if (Number(rawV) === applied) continue;
+      // `clampTemperature` refuses a bool and installs the neutral 1.0, and `Number(true)` is
+      // exactly that 1.0, so comparing the two numbers alone read a JSON `true` as an accepted
+      // temperature and loaded it in silence. `false` was reported only because it floats to 0.0.
+      if (typeof rawV !== "boolean" && Number(rawV) === applied) continue;
       rejected.push(`${name}=${JSON.stringify(rawV) ?? String(rawV)} -> ${applied}`);
     }
     if (rejected.length > 0) {
@@ -555,8 +569,8 @@ export class Agent extends HookRegistry {
       ? [...this.hooks, ...normaliseHooks(opts.hooks, opts.onPredictStart, opts.onPredictEnd)]
       : composeHooks(this.hooks, opts.hooks, opts.onPredictStart, opts.onPredictEnd);
     const raiseErrors = opts.hooksRaise ?? this.hooksRaise;
-    const hooksTimeout = opts.hooksTimeout ?? this.hooksTimeout;
-    const timeoutMs = typeof hooksTimeout === "number" ? hooksTimeout * 1000 : null;
+    const hooksTimeout = validateHooksTimeout(opts.hooksTimeout ?? this.hooksTimeout);
+    const timeoutMs = hooksTimeout === null ? null : hooksTimeout * 1000;
     const ctx = new PredictContext({
       states,
       questions: questions as Record<string, unknown>,
@@ -609,11 +623,12 @@ export class Agent extends HookRegistry {
       throw err;
     } finally {
       ctx.markElapsed();
-      if (ctx.results !== null) {
+      if (ctx.results !== null && (!isLongCall(opts) || Array.isArray(ctx.results))) {
         ctx.usage = aggregateUsage(ctx.results);
         if (mc !== null) {
           flagLowConfidence(ctx.results as unknown as Record<string, unknown>[], mc);
         }
+        recordLongResults(opts, ctx);
       }
       try {
         await dispatchAsync(active, "onPredictEnd", ctx, { raiseErrors, timeoutMs });
@@ -622,6 +637,7 @@ export class Agent extends HookRegistry {
         if (ctx.error === null) throw hookErr;
       }
     }
+    finishLongResults(opts, ctx);
     return ctx.results as unknown as SystemOneResult[];
   }
 
@@ -875,6 +891,19 @@ export class Agent extends HookRegistry {
     return this._predictHooked(states, questions, opts);
   }
 
+  /** Scan overlapping token windows locally and keep each question's strongest answer.
+   * Attribution refers to the original candidate token slice; decoding and re-encoding can
+   * change its length. Confidence belongs to the winning window, not the whole document.
+   * Agent hooks wrap one batch of windows. A hook budget change is checked after inference.
+   */
+  async predictLong(
+    state: unknown,
+    questions: Record<string, QuestionDef>,
+    opts: LongPredictOptions = {},
+  ): Promise<LongResult> {
+    return predictLong(this, state, questions, opts);
+  }
+
   /**
    * Answer `state` against a JSON schema (or explicit `opts.questions`) and return typed
    * values — see `structured.ts`. Pass exactly one of `schema` or `opts.questions`; other
@@ -896,6 +925,31 @@ export class Agent extends HookRegistry {
     opts: DecideOptions & PredictOptions = {},
   ): Promise<Record<string, unknown> | DecisionResult> {
     return decide(this, state, schema, opts);
+  }
+
+  /**
+   * Answer many states against one schema in one batched call, in input order.
+   *
+   * The throughput form of `decide`: the schema is planned once and evaluated
+   * over every state through `predictBatch` (shared forward passes, results in input order).
+   * See `structured.ts`.
+   */
+  async decideBatch(
+    states: unknown[],
+    schema: unknown,
+    opts: DecideBatchOptions & PredictOptions & { returnDetails: true },
+  ): Promise<DecisionResult[]>;
+  async decideBatch(
+    states: unknown[],
+    schema?: unknown,
+    opts?: DecideBatchOptions & PredictOptions,
+  ): Promise<Record<string, unknown>[]>;
+  async decideBatch(
+    states: unknown[],
+    schema?: unknown,
+    opts: DecideBatchOptions & PredictOptions = {},
+  ): Promise<Record<string, unknown>[] | DecisionResult[]> {
+    return decideBatch(this, states, schema, opts);
   }
 
   static async load(

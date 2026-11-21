@@ -59,7 +59,7 @@ const scriptMaxCodePoint = 0xfeff
 // stopLists are the function words per language, in the order lang.py declares them:
 // the language that wins a tied score is the first one listed.
 var stopLists = [...]stopList{
-	{"en", newSet("and", "are", "as", "at", "be", "but", "can", "for", "from", "has", "have", "i", "in", "is", "it", "not", "of", "on", "please", "that", "the", "their", "there", "this", "to", "was", "we", "were", "what", "which", "will", "with", "would", "you")},
+	{"en", newSet("after", "already", "always", "and", "any", "are", "aren", "as", "at", "be", "because", "been", "before", "being", "between", "both", "but", "can", "could", "couldn", "didn", "didnt", "does", "doesn", "doesnt", "doing", "done", "dont", "down", "during", "each", "ever", "every", "few", "for", "from", "has", "hasn", "have", "haven", "havent", "here", "him", "his", "how", "i", "if", "in", "into", "is", "isn", "isnt", "it", "ive", "many", "might", "much", "must", "never", "nor", "not", "of", "on", "only", "onto", "our", "please", "shall", "she", "should", "some", "than", "that", "thats", "the", "their", "them", "then", "there", "these", "they", "this", "those", "through", "to", "too", "until", "very", "was", "wasn", "wasnt", "we", "were", "weren", "what", "whats", "when", "where", "which", "while", "who", "whom", "why", "will", "with", "within", "without", "won", "wont", "would", "wouldn", "yet", "you", "your", "youre", "yours")},
 	{"fr", newSet("alors", "au", "aux", "avec", "bien", "bonjour", "ce", "ces", "cette", "comment", "dans", "des", "deux", "dois", "doit", "donc", "du", "elle", "elles", "est", "et", "fait", "fois", "il", "ils", "je", "jour", "jours", "la", "le", "les", "ma", "mais", "merci", "mes", "mois", "mon", "nous", "ont", "ou", "pas", "peut", "peux", "plus", "pour", "pourquoi", "quand", "que", "qui", "sa", "ses", "sont", "sur", "ta", "tes", "ton", "tous", "tout", "toute", "trois", "très", "tu", "une", "veut", "veux", "vous", "être")},
 	{"de", newSet("aber", "auch", "auf", "aus", "bei", "bitte", "das", "dem", "den", "der", "dich", "die", "diese", "diesen", "dieser", "dieses", "dir", "ein", "eine", "einem", "einen", "einer", "für", "gibt", "habe", "haben", "heute", "ich", "im", "in", "ist", "jetzt", "kann", "kannst", "mein", "meine", "meinem", "meinen", "meiner", "mich", "mir", "mit", "nach", "nicht", "noch", "oder", "sich", "sind", "und", "uns", "von", "wann", "was", "welche", "werden", "wie", "wir", "wird", "wo", "wurde", "zu", "zum", "zur")},
 	{"es", newSet("al", "algo", "aquí", "aunque", "como", "con", "cuando", "del", "donde", "dos", "el", "entre", "es", "esa", "ese", "eso", "esta", "este", "esto", "está", "fue", "fueron", "gracias", "han", "hay", "hemos", "hoy", "la", "las", "le", "les", "lo", "los", "mi", "muy", "más", "nada", "necesito", "ni", "nos", "para", "pero", "por", "porque", "puede", "pueden", "que", "quiero", "se", "ser", "sobre", "son", "su", "sus", "también", "tengo", "tiene", "tienen", "todo", "tres", "tu", "un", "una", "y", "ya")},
@@ -82,7 +82,7 @@ var sharedWords = newSet("as", "como", "con", "da", "das", "del", "dois", "dos",
 var nordicOverlapWords = newSet("får", "hej", "ja", "jo", "kommer", "mig", "min", "nej", "om", "skulle", "tack", "vi")
 
 // enOnlyWords English function words no other list holds.
-var enOnlyWords = newSet("and", "are", "at", "be", "but", "can", "for", "from", "has", "have", "i", "it", "not", "of", "on", "please", "that", "the", "their", "there", "this", "to", "we", "were", "what", "which", "will", "with", "would", "you")
+var enOnlyWords = newSet("after", "already", "always", "and", "any", "are", "aren", "at", "be", "because", "been", "before", "being", "between", "both", "but", "can", "could", "couldn", "didn", "didnt", "does", "doesn", "doesnt", "doing", "done", "dont", "down", "during", "each", "ever", "every", "few", "for", "from", "has", "hasn", "have", "haven", "havent", "here", "him", "his", "how", "i", "if", "into", "isn", "isnt", "it", "ive", "many", "might", "much", "must", "never", "nor", "not", "of", "on", "only", "onto", "our", "please", "shall", "she", "should", "some", "than", "that", "thats", "the", "their", "them", "then", "there", "these", "they", "this", "those", "through", "to", "too", "until", "very", "wasn", "wasnt", "we", "were", "weren", "what", "whats", "when", "where", "which", "while", "who", "whom", "why", "will", "with", "within", "without", "won", "wont", "would", "wouldn", "yet", "you", "your", "youre", "yours")
 
 // enCollisionWords Words that collide with English, counted once however often they repeat.
 var enCollisionWords = newSet("care", "come", "do", "im", "per", "plus", "son", "todo")
@@ -93,7 +93,10 @@ var nonEnDiacritics = [...]rune{
 	223, 224, 225, 226, 227, 228, 229, 230, 231, 232, 233, 234, 235, 236, 237, 238, 239, 241, 242,
 	243, 244, 245, 246, 248, 249, 250, 251, 252, 253, 255, 257, 259, 261, 263, 269, 271, 273, 275,
 	281, 283, 287, 291, 299, 305, 311, 316, 322, 324, 326, 328, 337, 339, 345, 347, 351, 353, 355,
-	357, 363, 367, 369, 378, 380, 382, 537, 539, 601,
+	357, 363, 367, 369, 378, 380, 382, 417, 432, 537, 539, 601, 7841, 7843, 7845, 7847, 7849, 7851,
+	7853, 7855, 7857, 7859, 7861, 7863, 7865, 7867, 7869, 7871, 7873, 7875, 7877, 7879, 7881, 7883,
+	7885, 7887, 7889, 7891, 7893, 7895, 7897, 7899, 7901, 7903, 7905, 7907, 7909, 7911, 7913, 7915,
+	7917, 7919, 7921, 7923, 7925, 7927, 7929,
 }
 
 const (
